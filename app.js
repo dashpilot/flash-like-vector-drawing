@@ -1817,7 +1817,7 @@ document.getElementById('btn-export-svg').addEventListener('click', exportToSVG)
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'v' || e.key === 'V') toolSelect.click();
-  else if (e.key === 'p' || e.key === 'P') toolPen.click();
+  else if (e.key === 'n' || e.key === 'N') toolPen.click();
   else if (e.key === 'r' || e.key === 'R') toolRect.click();
   else if (e.key === 'o' || e.key === 'O') toolOval.click();
   else if (e.key === 'b' || e.key === 'B') toolPaintBucket.click();

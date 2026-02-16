@@ -2,7 +2,7 @@
 
 Adobe Flash/Animate had some of the best vector drawing tools ever made. When Adobe announced plans to kill Animate entirely (later reversed), these tools nearly vanished forever. So I rebuilt them for the web—a small passion project to preserve what made Flash's creative tools so special.
 
-Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square or circle. Select and edit with the Selection tool (V), or fill shapes with the Paint Bucket (B). Lines that cross automatically split. Export to SVG when done.
+Draw with the Line (N), Rectangle (R), or Oval (O) tools—hold Shift for square or circle. Select and edit with the Selection tool (V), or fill shapes with the Paint Bucket (B). Lines that cross automatically split. Export to SVG when done.
 
 **[Try it live →](https://flash-like-vector-drawing.vercel.app/)**
 
@@ -11,10 +11,10 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 ### Tools
 
 - **Selection (V)** — Select, move, reshape segments
-- **Pen / Line (P)** — Draw vector lines
+- **Line (N)** — Draw vector lines
 - **Paint Bucket (B)** — Fill closed shapes with color
 
-### Pen / Line Tool (P)
+### Line Tool (N)
 
 - **Drag only** — you must press and hold the mouse button to draw; each drag creates one segment
 - **Shift held during drag** — constrains to straight lines or 45° angles (0°, 45°, 90°, etc.)
@@ -43,7 +43,7 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 ### Keyboard Shortcuts
 
 - **V** — Selection tool
-- **P** — Pen/Line tool
+- **N** — Line tool
 - **Command-D** (Ctrl-D) — Duplicate selected segments or fills
 - **Delete / Backspace** — Delete selected segment(s)
 

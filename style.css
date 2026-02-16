@@ -72,6 +72,7 @@ body {
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s ease;
+  line-height: 0;
 }
 
 .tool-btn:hover {
@@ -85,8 +86,14 @@ body {
   color: var(--tool-active-fg);
 }
 
-.tool-btn .bi {
+.tool-btn .bi,
+.tool-btn .tool-icon-line {
   font-size: 18px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: block;
+  margin: 0 auto;
 }
 
 .tool-label {
