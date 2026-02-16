@@ -128,6 +128,13 @@ body {
   overflow: auto;
 }
 
+.canvas-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
 .canvas-container {
   background: var(--canvas-bg);
   border: 1px solid var(--border);
@@ -136,6 +143,17 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.github-link {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.github-link:hover {
+  color: var(--text);
 }
 
 #canvas {
