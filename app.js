@@ -1304,7 +1304,17 @@ function selectMouseMove(e) {
       }
     } else if (dragState.type === 'moveEndpoint') {
       const exclude = new Set(dragState.vertices.map(v => v.index));
-      const snapped = snapToNearestPoint(p.x, p.y, exclude);
+      let tx = p.x, ty = p.y;
+      if (e.shiftKey && dragState.vertices.length > 0) {
+        const { index, which } = dragState.vertices[0];
+        const seg = segments[index];
+        const anchorX = which === 'start' ? seg.x1 : seg.x0;
+        const anchorY = which === 'start' ? seg.y1 : seg.y0;
+        const constrained = constrainToAngles(anchorX, anchorY, p.x, p.y);
+        tx = constrained.x;
+        ty = constrained.y;
+      }
+      const snapped = snapToNearestPoint(tx, ty, exclude);
       for (const { index, which } of dragState.vertices) {
         const seg = segments[index];
         if (which === 'start') {
