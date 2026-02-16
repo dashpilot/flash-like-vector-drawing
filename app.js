@@ -182,6 +182,123 @@ function ellipseToCubicArcs(cx, cy, rx, ry, props = {}) {
   ];
 }
 
+function cubicCubicIntersection(c1, c2) {
+  const results = [];
+  const flatnessThreshold = 4;
+  const maxDepth = 10;
+  const cubicBBox = (c) => {
+    const xs = [c.x0, c.c1x, c.c2x, c.x1];
+    const ys = [c.y0, c.c1y, c.c2y, c.y1];
+    return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  };
+  const bboxOverlap = (a, b) => !(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY);
+  const chordDist = (c) => {
+    const dx = c.x1 - c.x0, dy = c.y1 - c.y0;
+    const len = Math.hypot(dx, dy) || 1;
+    let maxD = 0;
+    for (const p of [{ x: c.c1x, y: c.c1y }, { x: c.c2x, y: c.c2y }]) {
+      const t = Math.max(0, Math.min(1, ((p.x - c.x0) * dx + (p.y - c.y0) * dy) / (len * len)));
+      const projX = c.x0 + t * dx, projY = c.y0 + t * dy;
+      maxD = Math.max(maxD, Math.hypot(p.x - projX, p.y - projY));
+    }
+    return maxD;
+  };
+  const eps = 1e-5;
+  function recurse(a, ta0, ta1, b, tb0, tb1, depth) {
+    if (depth > maxDepth) return;
+    const bboxA = cubicBBox(a), bboxB = cubicBBox(b);
+    if (!bboxOverlap(bboxA, bboxB)) return;
+    const flatA = chordDist(a) < flatnessThreshold;
+    const flatB = chordDist(b) < flatnessThreshold;
+    if (flatA && flatB) {
+      const isec = lineLineIntersection(a.x0, a.y0, a.x1, a.y1, b.x0, b.y0, b.x1, b.y1);
+      if (isec) {
+        const ta = (ta0 + ta1) / 2, tb = (tb0 + tb1) / 2;
+        if (ta > eps && ta < 1 - eps && tb > eps && tb < 1 - eps) {
+          if (results.every(r => Math.hypot(r.x - isec.x, r.y - isec.y) > 0.5)) {
+            results.push({ x: isec.x, y: isec.y, tA: ta, tB: tb });
+          }
+        }
+      }
+      return;
+    }
+    if (!flatA || (!flatB && chordDist(b) < chordDist(a))) {
+      const [left, right] = splitCubicAt(a, 0.5);
+      const tmid = (ta0 + ta1) / 2;
+      recurse(left, ta0, tmid, b, tb0, tb1, depth + 1);
+      recurse(right, tmid, ta1, b, tb0, tb1, depth + 1);
+    } else {
+      const [left, right] = splitCubicAt(b, 0.5);
+      const tmid = (tb0 + tb1) / 2;
+      recurse(a, ta0, ta1, left, tb0, tmid, depth + 1);
+      recurse(a, ta0, ta1, right, tmid, tb1, depth + 1);
+    }
+  }
+  recurse(c1, 0, 1, c2, 0, 1, 0);
+  return results;
+}
+
+function circleCircleIntersection(cx1, cy1, r1, cx2, cy2, r2) {
+  const dx = cx2 - cx1, dy = cy2 - cy1;
+  const d = Math.hypot(dx, dy);
+  if (d > r1 + r2 || d < Math.abs(r1 - r2) - 1e-6 || d < 1e-6) return [];
+  const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+  const hSq = r1 * r1 - a * a;
+  if (hSq < 0) return [];
+  const h = Math.sqrt(hSq);
+  const px = cx1 + a * dx / d, py = cy1 + a * dy / d;
+  const p1 = { x: px + h * (-dy) / d, y: py + h * dx / d };
+  const p2 = { x: px - h * (-dy) / d, y: py - h * dx / d };
+  return [p1, p2];
+}
+
+function pointToCircleParam(cx, cy, r, px, py) {
+  let theta = Math.atan2(py - cy, px - cx);
+  if (theta < 0) theta += Math.PI * 2;
+  const param = 2 * theta / Math.PI;
+  const arcIdx = Math.floor(param) % 4;
+  const t = param - Math.floor(param);
+  return { arcIdx, t };
+}
+
+function ellipseEllipseIntersection(segA, segB) {
+  if (Math.abs(segA.rx - segA.ry) < 1e-6 && Math.abs(segB.rx - segB.ry) < 1e-6) {
+    const pts = circleCircleIntersection(segA.cx, segA.cy, segA.rx, segB.cx, segB.cy, segB.rx);
+    if (pts.length < 2) return [];
+    return pts.map(p => {
+      const a = pointToCircleParam(segA.cx, segA.cy, segA.rx, p.x, p.y);
+      const b = pointToCircleParam(segB.cx, segB.cy, segB.rx, p.x, p.y);
+      return {
+        x: p.x, y: p.y,
+        ellipseAParam: a.arcIdx + a.t, ellipseBParam: b.arcIdx + b.t,
+        arcIdxA: a.arcIdx, tA: a.t, arcIdxB: b.arcIdx, tB: b.t
+      };
+    }).sort((a, b) => a.ellipseAParam - b.ellipseAParam);
+  }
+  const arcsA = ellipseToCubicArcs(segA.cx, segA.cy, segA.rx, segA.ry, {});
+  const arcsB = ellipseToCubicArcs(segB.cx, segB.cy, segB.rx, segB.ry, {});
+  const results = [];
+  for (let ai = 0; ai < 4; ai++) {
+    for (let bi = 0; bi < 4; bi++) {
+      for (const r of cubicCubicIntersection(arcsA[ai], arcsB[bi])) {
+        results.push({
+          ellipseAParam: ai + r.tA,
+          ellipseBParam: bi + r.tB,
+          arcIdxA: ai, tA: r.tA,
+          arcIdxB: bi, tB: r.tB,
+          x: r.x, y: r.y
+        });
+      }
+    }
+  }
+  const eps = 1;
+  const deduped = [];
+  for (const r of results) {
+    if (deduped.every(d => Math.hypot(d.x - r.x, d.y - r.y) > eps)) deduped.push(r);
+  }
+  return deduped.sort((a, b) => a.ellipseAParam - b.ellipseAParam);
+}
+
 function lineEllipseIntersection(lx0, ly0, lx1, ly1, seg) {
   const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, {});
   const results = [];
@@ -309,6 +426,60 @@ function splitSegmentsAtAllIntersections() {
           }
           if (!splits.has(i)) splits.set(i, []);
           splits.set(i, list);
+        }
+      } else if (a.type === 'C' && b.type === 'C') {
+        const list = cubicCubicIntersection(a, b);
+        for (const isec of list) {
+          if (!splits.has(i)) splits.set(i, []);
+          if (splits.get(i).every(s => Math.abs(s.u - isec.tA) > eps)) splits.get(i).push({ u: isec.tA, x: isec.x, y: isec.y });
+          if (!splits.has(j)) splits.set(j, []);
+          if (splits.get(j).every(s => Math.abs(s.u - isec.tB) > eps)) splits.get(j).push({ u: isec.tB, x: isec.x, y: isec.y });
+        }
+      } else if (a.type === 'C' && b.type === 'E') {
+        const arcs = ellipseToCubicArcs(b.cx, b.cy, b.rx, b.ry, {});
+        const list = [];
+        for (let bi = 0; bi < 4; bi++) {
+          for (const r of cubicCubicIntersection(a, arcs[bi])) {
+            list.push({ uCubic: r.tA, arcIdx: bi, t: r.tB, x: r.x, y: r.y, ellipseParam: bi + r.tB });
+          }
+        }
+        const deduped = [];
+        for (const r of list) {
+          if (deduped.every(d => Math.hypot(d.x - r.x, d.y - r.y) > 0.1)) deduped.push(r);
+        }
+        if (deduped.length >= 2) {
+          for (const r of deduped) {
+            if (!splits.has(i)) splits.set(i, []);
+            if (splits.get(i).every(s => Math.abs(s.u - r.uCubic) > eps)) splits.get(i).push({ u: r.uCubic, x: r.x, y: r.y });
+          }
+          splits.set(j, deduped.map(r => ({ arcIdx: r.arcIdx, t: r.t, x: r.x, y: r.y, ellipseParam: r.ellipseParam })));
+        }
+      } else if (a.type === 'E' && b.type === 'C') {
+        const arcs = ellipseToCubicArcs(a.cx, a.cy, a.rx, a.ry, {});
+        const list = [];
+        for (let ai = 0; ai < 4; ai++) {
+          for (const r of cubicCubicIntersection(arcs[ai], b)) {
+            list.push({ arcIdx: ai, t: r.tA, x: r.x, y: r.y, ellipseParam: ai + r.tA, uCubic: r.tB });
+          }
+        }
+        const deduped = [];
+        for (const r of list) {
+          if (deduped.every(d => Math.hypot(d.x - r.x, d.y - r.y) > 0.1)) deduped.push(r);
+        }
+        if (deduped.length >= 2) {
+          splits.set(i, deduped.map(r => ({ arcIdx: r.arcIdx, t: r.t, x: r.x, y: r.y, ellipseParam: r.ellipseParam })));
+          for (const r of deduped) {
+            if (!splits.has(j)) splits.set(j, []);
+            if (splits.get(j).every(s => Math.abs(s.u - r.uCubic) > eps)) splits.get(j).push({ u: r.uCubic, x: r.x, y: r.y });
+          }
+        }
+      } else if (a.type === 'E' && b.type === 'E') {
+        const list = ellipseEllipseIntersection(a, b);
+        if (list.length >= 2) {
+          const listA = list.map(r => ({ arcIdx: r.arcIdxA, t: r.tA, x: r.x, y: r.y, ellipseParam: r.ellipseAParam }));
+          const listB = list.map(r => ({ arcIdx: r.arcIdxB, t: r.tB, x: r.x, y: r.y, ellipseParam: r.ellipseBParam }));
+          splits.set(i, listA);
+          splits.set(j, listB);
         }
       }
     }
@@ -466,6 +637,25 @@ function rectContainsPoint(r, x, y) {
 function segmentIntersectsRect(seg, rx0, ry0, rx1, ry1) {
   const xMin = Math.min(rx0, rx1), xMax = Math.max(rx0, rx1);
   const yMin = Math.min(ry0, ry1), yMax = Math.max(ry0, ry1);
+  if (seg.type === 'E') {
+    const { cx, cy, rx, ry } = seg;
+    if (cx + rx < xMin || cx - rx > xMax || cy + ry < yMin || cy - ry > yMax) return false;
+    for (let t = 0; t < 1; t += 0.03) {
+      const rad = t * Math.PI * 2;
+      const px = cx + rx * Math.cos(rad), py = cy + ry * Math.sin(rad);
+      if (px >= xMin && px <= xMax && py >= yMin && py <= yMax) return true;
+    }
+    const rectCorners = [[xMin, yMin], [xMax, yMin], [xMax, yMax], [xMin, yMax]];
+    for (const [px, py] of rectCorners) {
+      const dx = (px - cx) / rx, dy = (py - cy) / ry;
+      if (dx * dx + dy * dy <= 1) return true;
+    }
+    const rectEdges = [[xMin, yMin, xMax, yMin], [xMax, yMin, xMax, yMax], [xMax, yMax, xMin, yMax], [xMin, yMax, xMin, yMin]];
+    for (const [x0, y0, x1, y1] of rectEdges) {
+      if (lineEllipseIntersection(x0, y0, x1, y1, seg).length >= 1) return true;
+    }
+    return false;
+  }
   if (rectContainsPoint({ x0: rx0, y0: ry0, x1: rx1, y1: ry1 }, seg.x0, seg.y0)) return true;
   if (rectContainsPoint({ x0: rx0, y0: ry0, x1: rx1, y1: ry1 }, seg.x1, seg.y1)) return true;
   if (seg.type === 'Q' && rectContainsPoint({ x0: rx0, y0: ry0, x1: rx1, y1: ry1 }, seg.cx, seg.cy)) return true;
@@ -512,9 +702,19 @@ function fillToPolygon(fill) {
     for (const idx of fill.segmentIndices) {
       const s = segments[idx];
       if (!s) continue;
-      for (const p of [[s.x0, s.y0], [s.x1, s.y1]]) {
-        const k = key(p[0], p[1]);
-        if (!seen.has(k)) { seen.add(k); pts.push(p); }
+      if (s.type === 'E') {
+        const arcs = ellipseToCubicArcs(s.cx, s.cy, s.rx, s.ry, {});
+        for (const a of arcs) {
+          for (const p of [[a.x0, a.y0], [a.x1, a.y1]]) {
+            const k = key(p[0], p[1]);
+            if (!seen.has(k)) { seen.add(k); pts.push(p); }
+          }
+        }
+      } else {
+        for (const p of [[s.x0, s.y0], [s.x1, s.y1]]) {
+          const k = key(p[0], p[1]);
+          if (!seen.has(k)) { seen.add(k); pts.push(p); }
+        }
       }
     }
     if (pts.length < 3) return [];
@@ -844,13 +1044,28 @@ function screenToCanvas(e) {
 }
 
 // --- Paint bucket: find smallest enclosing cycle (Photoshop-like: slicing creates new boundaries) ---
+// E segments are expanded to 4 arcs for cycle finding; cycles map back to original segment indices
 function findFillContour(startX, startY) {
   const eps = 2;
   const key = (x, y) => `${Math.round(x / eps)},${Math.round(y / eps)}`;
-  const segAtKey = new Map();
+  const expandedSegments = [];
+  const expandedToOriginal = [];
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    if (seg.type === 'E') continue; // E handled via arcs when split; unsplit E has no x0,y0,x1,y1
+    if (seg.type === 'E') {
+      const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, {});
+      for (const a of arcs) {
+        expandedSegments.push(a);
+        expandedToOriginal.push(i);
+      }
+    } else {
+      expandedSegments.push(seg);
+      expandedToOriginal.push(i);
+    }
+  }
+  const segAtKey = new Map();
+  for (let i = 0; i < expandedSegments.length; i++) {
+    const seg = expandedSegments[i];
     const k0 = key(seg.x0, seg.y0), k1 = key(seg.x1, seg.y1);
     if (!segAtKey.has(k0)) segAtKey.set(k0, []);
     segAtKey.get(k0).push({ i, which: 'start' });
@@ -860,62 +1075,82 @@ function findFillContour(startX, startY) {
   const cyclesContainingPoint = [];
   const cycleKey = (path) => [...path].sort((a, b) => a - b).join(',');
   const seenCycles = new Set();
-  for (let start = 0; start < segments.length; start++) {
-    const seg = segments[start];
-    if (seg.type === 'E') continue;
-    const path = [];
-    let cur = start;
-    let pt = [seg.x1, seg.y1];
+  const maxCycleLen = Math.min(expandedSegments.length + 2, 32);
+  const maxStates = 12000;
+  let statesProcessed = 0;
+  function samplePointsOnSeg(seg, n) {
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      if (seg.c1x !== undefined) {
+        const p = cubicParametricPoint(seg, t);
+        pts.push([p.x, p.y]);
+      } else {
+        pts.push([seg.x0 + t * (seg.x1 - seg.x0), seg.y0 + t * (seg.y1 - seg.y0)]);
+      }
+    }
+    return pts;
+  }
+  function recordCycleIfValid(path, startX, startY) {
+    if (path.length < 2) return;
+    const ck = cycleKey(path);
+    if (seenCycles.has(ck)) return;
+    seenCycles.add(ck);
+    const pts = [];
+    for (const idx of path) {
+      const sb = expandedSegments[idx];
+      if (path.length === 2) {
+        pts.push(...samplePointsOnSeg(sb, 8));
+      } else {
+        pts.push([sb.x0, sb.y0], [sb.x1, sb.y1]);
+      }
+    }
+    const ptSeen = new Set();
+    const poly = [];
+    for (const p of pts) {
+      const kp = key(p[0], p[1]);
+      if (!ptSeen.has(kp)) { ptSeen.add(kp); poly.push(p); }
+    }
+    if (poly.length >= 3) {
+      const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+      const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+      poly.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, yi] = poly[i], [xj, yj] = poly[j];
+        if (((yi > startY) !== (yj > startY)) && (startX < (xj - xi) * (startY - yi) / (yj - yi) + xi)) inside = !inside;
+      }
+      if (inside) {
+        const area = Math.abs(poly.reduce((sum, p, i) => sum + p[0] * (poly[(i + 1) % poly.length][1] - poly[(i - 1 + poly.length) % poly.length][1]), 0) / 2);
+        const originalPath = [];
+        let last = -1;
+        for (const idx of path) {
+          const orig = expandedToOriginal[idx];
+          if (orig !== last) { originalPath.push(orig); last = orig; }
+        }
+        cyclesContainingPoint.push({ path: originalPath, area });
+      }
+    }
+  }
+  for (let start = 0; start < expandedSegments.length && statesProcessed < maxStates; start++) {
+    const seg = expandedSegments[start];
     const startPt = [seg.x0, seg.y0];
-    path.push(start);
-    for (let _ = 0; _ < segments.length + 2; _++) {
+    const stack = [{ path: [start], cur: start, pt: [seg.x1, seg.y1] }];
+    while (stack.length > 0 && statesProcessed < maxStates) {
+      const { path, cur, pt } = stack.pop();
+      statesProcessed++;
+      if (path.length > maxCycleLen) continue;
+      if (Math.hypot(pt[0] - startPt[0], pt[1] - startPt[1]) < eps * 2 && path.length >= 2) {
+        recordCycleIfValid(path, startX, startY);
+        continue;
+      }
       const k = key(pt[0], pt[1]);
       const neighbors = segAtKey.get(k) || [];
-      let next = null;
-      for (const n of neighbors) {
-        if (n.i !== cur && !path.includes(n.i)) {
-          next = n;
-          break;
-        }
-      }
-      if (!next) break;
-      path.push(next.i);
-      const s = segments[next.i];
-      pt = next.which === 'start' ? [s.x1, s.y1] : [s.x0, s.y0];
-      cur = next.i;
-      if (Math.hypot(pt[0] - startPt[0], pt[1] - startPt[1]) < eps * 2) {
-        if (path.length >= 3) {
-          const ck = cycleKey(path);
-          if (!seenCycles.has(ck)) {
-            seenCycles.add(ck);
-            const pts = [];
-            for (const idx of path) {
-              const sb = segments[idx];
-              pts.push([sb.x0, sb.y0], [sb.x1, sb.y1]);
-            }
-            const ptSeen = new Set();
-            const poly = [];
-            for (const p of pts) {
-              const kp = key(p[0], p[1]);
-              if (!ptSeen.has(kp)) { ptSeen.add(kp); poly.push(p); }
-            }
-            if (poly.length >= 3) {
-              const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
-              const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
-              poly.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
-              let inside = false;
-              for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-                const [xi, yi] = poly[i], [xj, yj] = poly[j];
-                if (((yi > startY) !== (yj > startY)) && (startX < (xj - xi) * (startY - yi) / (yj - yi) + xi)) inside = !inside;
-              }
-              if (inside) {
-                const area = Math.abs(poly.reduce((sum, p, i) => sum + p[0] * (poly[(i + 1) % poly.length][1] - poly[(i - 1 + poly.length) % poly.length][1]), 0) / 2);
-                cyclesContainingPoint.push({ path, area });
-              }
-            }
-          }
-        }
-        break;
+      const candidates = neighbors.filter(n => n.i !== cur && !path.includes(n.i));
+      for (const n of candidates) {
+        const s = expandedSegments[n.i];
+        const nextPt = n.which === 'start' ? [s.x1, s.y1] : [s.x0, s.y0];
+        stack.push({ path: [...path, n.i], cur: n.i, pt: nextPt });
       }
     }
   }
@@ -1147,16 +1382,22 @@ function penMouseUp(e) {
   }
   newPieces.push({ type: 'L', x0: cur.x0, y0: cur.y0, x1: cur.x1, y1: cur.y1, ...strokeProps });
 
-  // 3. Split crossed segments and rebuild array
+  // 3. Split crossed segments and rebuild array (with fill index remapping)
   const result = [];
+  const toRemove = new Set();
+  const oldToNew = new Map();
+  let newIdx = 0;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     const splits = segmentsToSplit.get(i);
     if (splits && seg.type === 'E') {
+      toRemove.add(i);
       splits.sort((a, b) => (a.ellipseParam ?? a.arcIdx + a.t) - (b.ellipseParam ?? b.arcIdx + b.t));
       const pieces = splitEllipseAtCrossings(seg, splits);
       result.push(...pieces);
+      newIdx += pieces.length;
     } else if (splits) {
+      toRemove.add(i);
       splits.sort((a, b) => a.u - b.u);
       let u0 = 0;
       let prev = seg;
@@ -1182,12 +1423,22 @@ function penMouseUp(e) {
       } else {
         result.push(prev);
       }
+      newIdx = result.length;
     } else {
+      oldToNew.set(i, newIdx);
       result.push(segments[i]);
+      newIdx++;
     }
   }
   result.push(...newPieces);
   segments = result;
+
+  fills = fills.filter(f => {
+    if (!f.segmentIndices) return true;
+    if (f.segmentIndices.some(idx => toRemove.has(idx))) return false;
+    f.segmentIndices = f.segmentIndices.map(idx => oldToNew.get(idx) ?? idx);
+    return true;
+  });
 
   selectedIndices.clear();
   for (let i = segments.length - newPieces.length; i < segments.length; i++) selectedIndices.add(i);
@@ -1490,16 +1741,23 @@ function ovalMouseUp(e) {
 
 // --- Paint bucket tool ---
 function paintBucketMouseDown(e) {
-  const p = screenToCanvas(e);
-  pushUndo(); // save state before split+fill
-  // Ensure all crossing segments are split (lines act as knives)
-  while (splitSegmentsAtAllIntersections()) { /* repeat until no more intersections */ }
-  const contour = findFillContour(p.x, p.y);
-  if (contour) {
-    fills.push({ color: fillColor, segmentIndices: contour });
+  try {
+    const p = screenToCanvas(e);
+    pushUndo();
+    let splitCount = 0;
+    while (splitSegmentsAtAllIntersections() && splitCount < 20) {
+      splitCount++;
+    }
+    const contour = findFillContour(p.x, p.y);
+    if (contour) {
+      fills.push({ color: fillColor, segmentIndices: contour });
+      render();
+    } else {
+      undo();
+    }
+  } catch (err) {
+    if (undoStack.length > 0) undo();
     render();
-  } else {
-    undo(); // revert split when click didn't hit a fillable region
   }
 }
 
