@@ -1,6 +1,8 @@
 # Flash-like Vector Drawing App
 
-A minimal vector drawing app that mimics Adobe Flash/Animate behavior. Built with vanilla JavaScript.
+Adobe Flash/Animate had some of the best vector drawing tools ever made. When Adobe announced plans to kill Animate entirely (later reversed), these tools nearly vanished forever. So I rebuilt them for the web—a small passion project to preserve what made Flash's creative tools so special.
+
+Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square or circle. Select and edit with the Selection tool (V), or fill shapes with the Paint Bucket (B). Lines that cross automatically split. Export to SVG when done.
 
 ## Features
 
