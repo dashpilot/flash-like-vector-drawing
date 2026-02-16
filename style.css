@@ -85,9 +85,8 @@ body {
   color: var(--tool-active-fg);
 }
 
-.tool-btn svg {
-  width: 18px;
-  height: 18px;
+.tool-btn .bi {
+  font-size: 18px;
 }
 
 .tool-label {
@@ -146,10 +145,17 @@ body {
 }
 
 .github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-size: 13px;
   color: var(--text-muted);
   text-decoration: none;
   transition: color 0.15s ease;
+}
+
+.github-link .bi {
+  font-size: 14px;
 }
 
 .github-link:hover {

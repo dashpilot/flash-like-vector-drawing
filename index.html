@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Flash-like Vector Drawing</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -14,32 +15,19 @@
     <header class="toolbar">
       <div class="tool-group">
         <button class="tool-btn" id="tool-select" title="Selection Tool (V)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 3l7.07 16.97 2.51-5.39 5.39-2.51L3 3z"/>
-          </svg>
+          <i class="bi bi-cursor"></i>
         </button>
         <button class="tool-btn" id="tool-pen" title="Pen Tool (P)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 19l7-7 3 3-7 7-3-3z"/>
-            <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
-          </svg>
+          <i class="bi bi-vector-pen"></i>
         </button>
         <button class="tool-btn" id="tool-rect" title="Rectangle Tool (R)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="5" y="5" width="14" height="14"/>
-          </svg>
+          <i class="bi bi-square"></i>
         </button>
         <button class="tool-btn" id="tool-oval" title="Oval Tool (O)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="9"/>
-          </svg>
+          <i class="bi bi-circle"></i>
         </button>
         <button class="tool-btn" id="tool-paintbucket" title="Paint Bucket (B)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M19 11H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2z"/>
-            <path d="M12 3v6"/>
-            <path d="M9 6h6"/>
-          </svg>
+          <i class="bi bi-paint-bucket"></i>
         </button>
       </div>
       <div class="toolbar-center">Flash-like Vector Drawing</div>
@@ -52,7 +40,7 @@
         <div class="canvas-container">
           <canvas id="canvas"></canvas>
         </div>
-        <a href="https://github.com/dashpilot/flash-like-vector-drawing" target="_blank" rel="noopener noreferrer" class="github-link">View on GitHub</a>
+        <a href="https://github.com/dashpilot/flash-like-vector-drawing" target="_blank" rel="noopener noreferrer" class="github-link"><i class="bi bi-star-fill"></i> Star on GitHub</a>
       </div>
       <aside class="properties-panel" id="properties-panel">
         <div class="panel-section panel-about" id="panel-about">
