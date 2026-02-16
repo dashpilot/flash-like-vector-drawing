@@ -4,6 +4,8 @@ Adobe Flash/Animate had some of the best vector drawing tools ever made. When Ad
 
 Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square or circle. Select and edit with the Selection tool (V), or fill shapes with the Paint Bucket (B). Lines that cross automatically split. Export to SVG when done.
 
+**[Try it live →](https://flash-like-vector-drawing.vercel.app/)**
+
 ## Features
 
 ### Tools
