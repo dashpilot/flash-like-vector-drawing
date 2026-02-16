@@ -9,16 +9,19 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 ## Features
 
 ### Tools
+
 - **Selection (V)** — Select, move, reshape segments
 - **Pen / Line (P)** — Draw vector lines
 - **Paint Bucket (B)** — Fill closed shapes with color
 
 ### Pen / Line Tool (P)
+
 - **Drag only** — you must press and hold the mouse button to draw; each drag creates one segment
 - **Shift held during drag** — constrains to straight lines or 45° angles (0°, 45°, 90°, etc.)
 - Each segment is created only while the mouse button is held (no click-to-place)
 
 ### Selection Tool (V)
+
 - **Click** on a segment to select it (blue dashed highlight)
 - **Shift + click** — add or remove segments from selection (multi-select)
 - **Drag on empty space** — marquee selection; draws a rectangle and selects all segments within it (blue semi-transparent fill)
@@ -29,10 +32,12 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 - **Properties panel** — Right side: stroke width, stroke color (swatches), paint bucket fill color
 
 ### Line as Knife
+
 - When a new line crosses an existing line, both are split at the intersection
 - All 4 resulting pieces become individually selectable segments
 
 ### Keyboard Shortcuts
+
 - **V** — Selection tool
 - **P** — Pen/Line tool
 - **Delete / Backspace** — Delete selected segment(s)
@@ -47,6 +52,6 @@ python3 -m http.server 3333
 
 Then visit http://localhost:3333
 
-## Styling
+## Press the :star: button
 
-The UI uses a Vercel-inspired light mode with Geist font.
+Don't forget to press the :star: button to let me know I should continue improving this project.
