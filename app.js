@@ -536,14 +536,30 @@ function splitSegmentsAtAllIntersections() {
   }
   segments = newSegments;
   const oldToNew = new Map();
+  const oldToNewMulti = new Map();
   for (let j = 0; j < newSegments.length; j++) {
     const oldIdx = indexMap[j];
-    if (!toRemove.has(oldIdx) && !oldToNew.has(oldIdx)) oldToNew.set(oldIdx, j);
+    if (toRemove.has(oldIdx)) {
+      if (!oldToNewMulti.has(oldIdx)) oldToNewMulti.set(oldIdx, []);
+      oldToNewMulti.get(oldIdx).push(j);
+    } else if (!oldToNew.has(oldIdx)) {
+      oldToNew.set(oldIdx, j);
+    }
   }
   fills = fills.filter(f => {
     if (!f.segmentIndices) return true;
-    if (f.segmentIndices.some(idx => toRemove.has(idx))) return false;
-    f.segmentIndices = f.segmentIndices.map(idx => oldToNew.get(idx) ?? idx);
+    const newIndices = [];
+    for (const idx of f.segmentIndices) {
+      if (toRemove.has(idx)) {
+        const mapped = oldToNewMulti.get(idx);
+        if (mapped && mapped.length > 0) newIndices.push(...mapped);
+      } else {
+        const mapped = oldToNew.get(idx);
+        if (mapped !== undefined) newIndices.push(mapped);
+      }
+    }
+    if (newIndices.length < 2) return false;
+    f.segmentIndices = newIndices;
     return true;
   });
   return true;
@@ -763,6 +779,19 @@ function distToEllipse(px, py, seg) {
   return minD;
 }
 
+function nearestPointOnEllipse(px, py, seg) {
+  let best = { x: seg.cx + seg.rx, y: seg.cy };
+  let minD = Math.hypot(px - best.x, py - best.y);
+  for (let i = 0; i <= 40; i++) {
+    const t = (i / 40) * Math.PI * 2;
+    const ex = seg.cx + seg.rx * Math.cos(t);
+    const ey = seg.cy + seg.ry * Math.sin(t);
+    const d = Math.hypot(px - ex, py - ey);
+    if (d < minD) { minD = d; best = { x: ex, y: ey }; }
+  }
+  return best;
+}
+
 function distToCubic(px, py, seg) {
   let minD = Infinity;
   for (let i = 0; i <= 30; i++) {
@@ -789,15 +818,17 @@ function getSegmentsAtVertex(x, y) {
 function hitTestSegment(canvasX, canvasY) {
   for (let i = segments.length - 1; i >= 0; i--) {
     const seg = segments[i];
-    const dToStart = Math.hypot(canvasX - seg.x0, canvasY - seg.y0);
-    const dToEnd = Math.hypot(canvasX - seg.x1, canvasY - seg.y1);
-    if (dToStart < ENDPOINT_HIT_RADIUS) {
-      const atVertex = getSegmentsAtVertex(seg.x0, seg.y0);
-      return { index: i, type: 'endpoint', which: 'start', atVertex };
-    }
-    if (dToEnd < ENDPOINT_HIT_RADIUS) {
-      const atVertex = getSegmentsAtVertex(seg.x1, seg.y1);
-      return { index: i, type: 'endpoint', which: 'end', atVertex };
+    if (seg.type !== 'E') {
+      const dToStart = Math.hypot(canvasX - seg.x0, canvasY - seg.y0);
+      const dToEnd = Math.hypot(canvasX - seg.x1, canvasY - seg.y1);
+      if (dToStart < ENDPOINT_HIT_RADIUS) {
+        const atVertex = getSegmentsAtVertex(seg.x0, seg.y0);
+        return { index: i, type: 'endpoint', which: 'start', atVertex };
+      }
+      if (dToEnd < ENDPOINT_HIT_RADIUS) {
+        const atVertex = getSegmentsAtVertex(seg.x1, seg.y1);
+        return { index: i, type: 'endpoint', which: 'end', atVertex };
+      }
     }
     let d;
     if (seg.type === 'L') {
@@ -894,7 +925,7 @@ function render() {
       ctx.beginPath();
       const segs = f.segmentIndices.map(i => segments[i]).filter(Boolean);
       if (segs.length > 0) {
-        const ptEq = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 2;
+        const ptEq = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 4;
         let px, py;
         const first = segs[0];
         if (first.type === 'E') {
@@ -941,10 +972,10 @@ function render() {
         }
         ctx.closePath();
         ctx.fillStyle = f.color;
-        ctx.fill();
+        ctx.fill('evenodd');
         if (isFillSelected) {
           ctx.fillStyle = getWhiteDotPattern();
-          ctx.fill();
+          ctx.fill('evenodd');
           ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 1;
           ctx.setLineDash([1, 6]);
@@ -959,10 +990,10 @@ function render() {
       for (let i = 1; i < f.polygon.length; i++) ctx.lineTo(f.polygon[i][0], f.polygon[i][1]);
       ctx.closePath();
       ctx.fillStyle = f.color;
-      ctx.fill();
+      ctx.fill('evenodd');
       if (isFillSelected) {
         ctx.fillStyle = getWhiteDotPattern();
-        ctx.fill();
+        ctx.fill('evenodd');
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1;
         ctx.setLineDash([1, 6]);
@@ -1168,21 +1199,29 @@ function snapToNearestPoint(x, y, excludeSegIndices = new Set()) {
   let minDist = SNAP_TO_ENDPOINT_RADIUS;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    const d0 = Math.hypot(x - seg.x0, y - seg.y0);
-    const d1 = Math.hypot(x - seg.x1, y - seg.y1);
-    if (d0 < minDist) { minDist = d0; best = { x: seg.x0, y: seg.y0 }; }
-    if (d1 < minDist) { minDist = d1; best = { x: seg.x1, y: seg.y1 }; }
-    if (!excludeSegIndices.has(i)) {
-      let pt;
-      if (seg.type === 'L') {
-        pt = nearestPointOnSegment(x, y, seg.x0, seg.y0, seg.x1, seg.y1);
-      } else if (seg.type === 'C') {
-        pt = nearestPointOnCubic(x, y, seg);
-      } else {
-        pt = nearestPointOnQuad(x, y, seg);
+    if (seg.type === 'E') {
+      if (!excludeSegIndices.has(i)) {
+        const pt = nearestPointOnEllipse(x, y, seg);
+        const d = Math.hypot(x - pt.x, y - pt.y);
+        if (d < minDist) { minDist = d; best = pt; }
       }
-      const d = Math.hypot(x - pt.x, y - pt.y);
-      if (d < minDist) { minDist = d; best = pt; }
+    } else {
+      const d0 = Math.hypot(x - seg.x0, y - seg.y0);
+      const d1 = Math.hypot(x - seg.x1, y - seg.y1);
+      if (d0 < minDist) { minDist = d0; best = { x: seg.x0, y: seg.y0 }; }
+      if (d1 < minDist) { minDist = d1; best = { x: seg.x1, y: seg.y1 }; }
+      if (!excludeSegIndices.has(i)) {
+        let pt;
+        if (seg.type === 'L') {
+          pt = nearestPointOnSegment(x, y, seg.x0, seg.y0, seg.x1, seg.y1);
+        } else if (seg.type === 'C') {
+          pt = nearestPointOnCubic(x, y, seg);
+        } else {
+          pt = nearestPointOnQuad(x, y, seg);
+        }
+        const d = Math.hypot(x - pt.x, y - pt.y);
+        if (d < minDist) { minDist = d; best = pt; }
+      }
     }
   }
   return best || { x, y };
@@ -1548,10 +1587,14 @@ function selectMouseMove(e) {
       dragState.lastY = p.y;
       for (const i of dragState.indices) {
         const seg = segments[i];
-        seg.x0 += dx; seg.y0 += dy;
-        seg.x1 += dx; seg.y1 += dy;
-        if (seg.type === 'Q') { seg.cx += dx; seg.cy += dy; }
-        if (seg.type === 'C') { seg.c1x += dx; seg.c1y += dy; seg.c2x += dx; seg.c2y += dy; }
+        if (seg.type === 'E') {
+          seg.cx += dx; seg.cy += dy;
+        } else {
+          seg.x0 += dx; seg.y0 += dy;
+          seg.x1 += dx; seg.y1 += dy;
+          if (seg.type === 'Q') { seg.cx += dx; seg.cy += dy; }
+          if (seg.type === 'C') { seg.c1x += dx; seg.c1y += dy; seg.c2x += dx; seg.c2y += dy; }
+        }
       }
     } else if (dragState.type === 'moveEndpoint') {
       const exclude = new Set(dragState.vertices.map(v => v.index));
@@ -1881,10 +1924,14 @@ document.addEventListener('keydown', (e) => {
             const seg = segments[i];
             if (!seg) continue;
             const copy = JSON.parse(JSON.stringify(seg));
-            copy.x0 += offset; copy.y0 += offset;
-            copy.x1 += offset; copy.y1 += offset;
-            if (copy.type === 'Q') { copy.cx += offset; copy.cy += offset; }
-            if (copy.type === 'C') { copy.c1x += offset; copy.c1y += offset; copy.c2x += offset; copy.c2y += offset; }
+            if (copy.type === 'E') {
+              copy.cx += offset; copy.cy += offset;
+            } else {
+              copy.x0 += offset; copy.y0 += offset;
+              copy.x1 += offset; copy.y1 += offset;
+              if (copy.type === 'Q') { copy.cx += offset; copy.cy += offset; }
+              if (copy.type === 'C') { copy.c1x += offset; copy.c1y += offset; copy.c2x += offset; copy.c2y += offset; }
+            }
             segments.push(copy);
             newIndices.push(segments.length - 1);
           }
@@ -1918,10 +1965,14 @@ document.addEventListener('keydown', (e) => {
       pushUndo();
       for (const i of selectedIndices) {
         const seg = segments[i];
-        seg.x0 += dx; seg.y0 += dy;
-        seg.x1 += dx; seg.y1 += dy;
-        if (seg.type === 'Q') { seg.cx += dx; seg.cy += dy; }
-        if (seg.type === 'C') { seg.c1x += dx; seg.c1y += dy; seg.c2x += dx; seg.c2y += dy; }
+        if (seg.type === 'E') {
+          seg.cx += dx; seg.cy += dy;
+        } else {
+          seg.x0 += dx; seg.y0 += dy;
+          seg.x1 += dx; seg.y1 += dy;
+          if (seg.type === 'Q') { seg.cx += dx; seg.cy += dy; }
+          if (seg.type === 'C') { seg.c1x += dx; seg.c1y += dy; seg.c2x += dx; seg.c2y += dy; }
+        }
       }
       render();
       e.preventDefault();
