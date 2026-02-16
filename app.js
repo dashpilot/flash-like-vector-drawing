@@ -546,10 +546,9 @@ function splitSegmentsAtAllIntersections() {
       oldToNew.set(oldIdx, j);
     }
   }
-  fills = fills.filter(f => {
-    if (!f.segmentIndices) return true;
+  function remapIndices(indices) {
     const newIndices = [];
-    for (const idx of f.segmentIndices) {
+    for (const idx of indices) {
       if (toRemove.has(idx)) {
         const mapped = oldToNewMulti.get(idx);
         if (mapped && mapped.length > 0) newIndices.push(...mapped);
@@ -558,8 +557,16 @@ function splitSegmentsAtAllIntersections() {
         if (mapped !== undefined) newIndices.push(mapped);
       }
     }
+    return newIndices;
+  }
+  fills = fills.filter(f => {
+    if (!f.segmentIndices) return true;
+    const newIndices = remapIndices(f.segmentIndices);
     if (newIndices.length < 2) return false;
     f.segmentIndices = newIndices;
+    if (f.holeSegmentIndices) {
+      f.holeSegmentIndices = f.holeSegmentIndices.map(hole => remapIndices(hole)).filter(h => h.length >= 2);
+    }
     return true;
   });
   return true;
@@ -711,41 +718,54 @@ function pointInPolygon(x, y, poly) {
 
 function fillToPolygon(fill) {
   if (fill.polygon) return fill.polygon;
-  if (fill.segmentIndices) {
-    const pts = [];
-    const seen = new Set();
-    const key = (x, y) => `${Math.round(x / 2)},${Math.round(y / 2)}`;
-    for (const idx of fill.segmentIndices) {
-      const s = segments[idx];
-      if (!s) continue;
-      if (s.type === 'E') {
-        const arcs = ellipseToCubicArcs(s.cx, s.cy, s.rx, s.ry, {});
-        for (const a of arcs) {
-          for (const p of [[a.x0, a.y0], [a.x1, a.y1]]) {
-            const k = key(p[0], p[1]);
-            if (!seen.has(k)) { seen.add(k); pts.push(p); }
-          }
-        }
-      } else {
-        for (const p of [[s.x0, s.y0], [s.x1, s.y1]]) {
+  if (fill.segmentIndices) return buildPolygonFromSegmentIndices(fill.segmentIndices);
+  return [];
+}
+
+function pointInFill(canvasX, canvasY, fill) {
+  const outerPoly = fillToPolygon(fill);
+  if (outerPoly.length < 3 || !pointInPolygon(canvasX, canvasY, outerPoly)) return false;
+  if (fill.holeSegmentIndices) {
+    for (const holeIndices of fill.holeSegmentIndices) {
+      const holePoly = buildPolygonFromSegmentIndices(holeIndices);
+      if (holePoly.length >= 3 && pointInPolygon(canvasX, canvasY, holePoly)) return false;
+    }
+  }
+  return true;
+}
+
+function buildPolygonFromSegmentIndices(indices) {
+  const pts = [];
+  const seen = new Set();
+  const key = (x, y) => `${Math.round(x / 2)},${Math.round(y / 2)}`;
+  for (const idx of indices) {
+    const s = segments[idx];
+    if (!s) continue;
+    if (s.type === 'E') {
+      const arcs = ellipseToCubicArcs(s.cx, s.cy, s.rx, s.ry, {});
+      for (const a of arcs) {
+        for (const p of [[a.x0, a.y0], [a.x1, a.y1]]) {
           const k = key(p[0], p[1]);
           if (!seen.has(k)) { seen.add(k); pts.push(p); }
         }
       }
+    } else {
+      for (const p of [[s.x0, s.y0], [s.x1, s.y1]]) {
+        const k = key(p[0], p[1]);
+        if (!seen.has(k)) { seen.add(k); pts.push(p); }
+      }
     }
-    if (pts.length < 3) return [];
-    const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
-    const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-    pts.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
-    return pts;
   }
-  return [];
+  if (pts.length < 3) return [];
+  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  pts.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+  return pts;
 }
 
 function hitTestFill(canvasX, canvasY) {
   for (let i = fills.length - 1; i >= 0; i--) {
-    const poly = fillToPolygon(fills[i]);
-    if (poly.length >= 3 && pointInPolygon(canvasX, canvasY, poly)) return i;
+    if (pointInFill(canvasX, canvasY, fills[i])) return i;
   }
   return -1;
 }
@@ -923,8 +943,9 @@ function render() {
     const isFillSelected = selectedFillIndices.has(fi);
     if (f.segmentIndices) {
       ctx.beginPath();
-      const segs = f.segmentIndices.map(i => segments[i]).filter(Boolean);
-      if (segs.length > 0) {
+      function addSubpathFromSegmentIndices(indices) {
+        const segs = indices.map(i => segments[i]).filter(Boolean);
+        if (segs.length === 0) return;
         const ptEq = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 4;
         let px, py;
         const first = segs[0];
@@ -971,18 +992,24 @@ function render() {
           }
         }
         ctx.closePath();
-        ctx.fillStyle = f.color;
-        ctx.fill('evenodd');
-        if (isFillSelected) {
-          ctx.fillStyle = getWhiteDotPattern();
-          ctx.fill('evenodd');
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 1;
-          ctx.setLineDash([1, 6]);
-          ctx.lineCap = 'round';
-          ctx.stroke();
-          ctx.setLineDash([]);
+      }
+      addSubpathFromSegmentIndices(f.segmentIndices);
+      if (f.holeSegmentIndices) {
+        for (const holeIndices of f.holeSegmentIndices) {
+          addSubpathFromSegmentIndices(holeIndices);
         }
+      }
+      ctx.fillStyle = f.color;
+      ctx.fill('evenodd');
+      if (isFillSelected) {
+        ctx.fillStyle = getWhiteDotPattern();
+        ctx.fill('evenodd');
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([1, 6]);
+        ctx.lineCap = 'round';
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     } else if (f.polygon) {
       ctx.beginPath();
@@ -1077,7 +1104,7 @@ function screenToCanvas(e) {
 // --- Paint bucket: find smallest enclosing cycle (Photoshop-like: slicing creates new boundaries) ---
 // E segments are expanded to 4 arcs for cycle finding; cycles map back to original segment indices
 function findFillContour(startX, startY) {
-  const eps = 2;
+  const eps = 4;
   const key = (x, y) => `${Math.round(x / eps)},${Math.round(y / eps)}`;
   const expandedSegments = [];
   const expandedToOriginal = [];
@@ -1103,6 +1130,7 @@ function findFillContour(startX, startY) {
     if (!segAtKey.has(k1)) segAtKey.set(k1, []);
     segAtKey.get(k1).push({ i, which: 'end' });
   }
+  const allCycles = [];
   const cyclesContainingPoint = [];
   const cycleKey = (path) => [...path].sort((a, b) => a - b).join(',');
   const seenCycles = new Set();
@@ -1122,11 +1150,7 @@ function findFillContour(startX, startY) {
     }
     return pts;
   }
-  function recordCycleIfValid(path, startX, startY) {
-    if (path.length < 2) return;
-    const ck = cycleKey(path);
-    if (seenCycles.has(ck)) return;
-    seenCycles.add(ck);
+  function cycleToPolyAndPath(path) {
     const pts = [];
     for (const idx of path) {
       const sb = expandedSegments[idx];
@@ -1142,25 +1166,35 @@ function findFillContour(startX, startY) {
       const kp = key(p[0], p[1]);
       if (!ptSeen.has(kp)) { ptSeen.add(kp); poly.push(p); }
     }
-    if (poly.length >= 3) {
-      const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
-      const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
-      poly.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
-      let inside = false;
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const [xi, yi] = poly[i], [xj, yj] = poly[j];
-        if (((yi > startY) !== (yj > startY)) && (startX < (xj - xi) * (startY - yi) / (yj - yi) + xi)) inside = !inside;
-      }
-      if (inside) {
-        const area = Math.abs(poly.reduce((sum, p, i) => sum + p[0] * (poly[(i + 1) % poly.length][1] - poly[(i - 1 + poly.length) % poly.length][1]), 0) / 2);
-        const originalPath = [];
-        let last = -1;
-        for (const idx of path) {
-          const orig = expandedToOriginal[idx];
-          if (orig !== last) { originalPath.push(orig); last = orig; }
-        }
-        cyclesContainingPoint.push({ path: originalPath, area });
-      }
+    if (poly.length < 3) return null;
+    const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+    const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+    poly.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+    const area = Math.abs(poly.reduce((sum, p, i) => sum + p[0] * (poly[(i + 1) % poly.length][1] - poly[(i - 1 + poly.length) % poly.length][1]), 0) / 2);
+    const originalPath = [];
+    let last = -1;
+    for (const idx of path) {
+      const orig = expandedToOriginal[idx];
+      if (orig !== last) { originalPath.push(orig); last = orig; }
+    }
+    return { poly, area, originalPath };
+  }
+  function recordCycleIfValid(path, startX, startY) {
+    if (path.length < 2) return;
+    const ck = cycleKey(path);
+    if (seenCycles.has(ck)) return;
+    seenCycles.add(ck);
+    const data = cycleToPolyAndPath(path);
+    if (!data) return;
+    const { poly, area, originalPath } = data;
+    allCycles.push({ path: originalPath, poly, area });
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if (((yi > startY) !== (yj > startY)) && (startX < (xj - xi) * (startY - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    if (inside) {
+      cyclesContainingPoint.push({ path: originalPath, poly, area });
     }
   }
   for (let start = 0; start < expandedSegments.length && statesProcessed < maxStates; start++) {
@@ -1171,7 +1205,7 @@ function findFillContour(startX, startY) {
       const { path, cur, pt } = stack.pop();
       statesProcessed++;
       if (path.length > maxCycleLen) continue;
-      if (Math.hypot(pt[0] - startPt[0], pt[1] - startPt[1]) < eps * 2 && path.length >= 2) {
+      if (Math.hypot(pt[0] - startPt[0], pt[1] - startPt[1]) < eps * 3 && path.length >= 2) {
         recordCycleIfValid(path, startX, startY);
         continue;
       }
@@ -1185,9 +1219,37 @@ function findFillContour(startX, startY) {
       }
     }
   }
+  if (cyclesContainingPoint.length === 0) {
+    if (allCycles.length === 0) return null;
+    const withDist = allCycles.map(c => {
+      const cx = c.poly.reduce((s, p) => s + p[0], 0) / c.poly.length;
+      const cy = c.poly.reduce((s, p) => s + p[1], 0) / c.poly.length;
+      const d = Math.hypot(startX - cx, startY - cy);
+      const inside = pointInPolygon(startX, startY, c.poly);
+      return { ...c, cx, cy, dist: d, inside };
+    });
+    const byContainment = withDist.filter(c => c.inside);
+    if (byContainment.length > 0) {
+      byContainment.sort((a, b) => a.area - b.area);
+      cyclesContainingPoint.push(byContainment[0]);
+    } else {
+      withDist.sort((a, b) => a.dist - b.dist);
+      cyclesContainingPoint.push(withDist[0]);
+    }
+  }
   if (cyclesContainingPoint.length === 0) return null;
   cyclesContainingPoint.sort((a, b) => a.area - b.area);
-  return cyclesContainingPoint[0].path;
+  const outer = cyclesContainingPoint[0];
+  const holes = [];
+  for (const c of allCycles) {
+    if (c.path === outer.path) continue;
+    const holeCx = c.poly.reduce((s, p) => s + p[0], 0) / c.poly.length;
+    const holeCy = c.poly.reduce((s, p) => s + p[1], 0) / c.poly.length;
+    if (!pointInPolygon(holeCx, holeCy, outer.poly)) continue;
+    if (c.area >= outer.area) continue;
+    holes.push(c.path);
+  }
+  return { outer: outer.path, holes };
 }
 
 function snapToNearestEndpoint(x, y) {
@@ -1262,33 +1324,64 @@ function exportToSVG() {
   const ptEq = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 2;
   let svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">\n`;
   svg += `  <rect width="100%" height="100%" fill="#ffffff"/>\n`;
+  function segmentsToPathD(indices) {
+    const segs = indices.map((i) => segments[i]).filter(Boolean);
+    if (segs.length === 0) return '';
+    const ptEq = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 4;
+    let px, py, d = '';
+    const first = segs[0];
+    if (first.type === 'E') {
+      const arcs = ellipseToCubicArcs(first.cx, first.cy, first.rx, first.ry, {});
+      d = `M ${arcs[0].x0} ${arcs[0].y0}`;
+      for (const a of arcs) d += ` C ${a.c1x} ${a.c1y} ${a.c2x} ${a.c2y} ${a.x1} ${a.y1}`;
+      px = arcs[3].x1; py = arcs[3].y1;
+    } else {
+      px = first.x0; py = first.y0;
+      d = `M ${px} ${py}`;
+      const ex = first.x1, ey = first.y1;
+      if (first.type === 'L') d += ` L ${ex} ${ey}`;
+      else if (first.type === 'C') d += ` C ${first.c1x} ${first.c1y} ${first.c2x} ${first.c2y} ${ex} ${ey}`;
+      else d += ` Q ${first.cx} ${first.cy} ${ex} ${ey}`;
+      px = ex; py = ey;
+    }
+    for (let i = 1; i < segs.length; i++) {
+      const seg = segs[i];
+      if (seg.type === 'E') {
+        const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, {});
+        if (ptEq([px, py], [arcs[0].x0, arcs[0].y0])) {
+          for (const a of arcs) d += ` C ${a.c1x} ${a.c1y} ${a.c2x} ${a.c2y} ${a.x1} ${a.y1}`;
+          px = arcs[3].x1; py = arcs[3].y1;
+        } else {
+          for (let j = 3; j >= 0; j--) {
+            const a = arcs[j];
+            d += ` C ${a.c2x} ${a.c2y} ${a.c1x} ${a.c1y} ${a.x0} ${a.y0}`;
+          }
+          px = arcs[0].x0; py = arcs[0].y0;
+        }
+      } else {
+        const forward = ptEq([px, py], [seg.x0, seg.y0]);
+        const ex = forward ? seg.x1 : seg.x0, ey = forward ? seg.y1 : seg.y0;
+        if (seg.type === 'L') d += ` L ${ex} ${ey}`;
+        else if (seg.type === 'C') d += ` C ${forward ? `${seg.c1x} ${seg.c1y} ${seg.c2x} ${seg.c2y}` : `${seg.c2x} ${seg.c2y} ${seg.c1x} ${seg.c1y}`} ${ex} ${ey}`;
+        else d += ` Q ${forward ? `${seg.cx} ${seg.cy}` : `${seg.x0 + seg.x1 - seg.cx} ${seg.y0 + seg.y1 - seg.cy}`} ${ex} ${ey}`;
+        px = ex; py = ey;
+      }
+    }
+    return d + ' Z ';
+  }
   fills.forEach((f) => {
     let d = '';
     if (f.segmentIndices) {
-      const segs = f.segmentIndices.map((i) => segments[i]).filter(Boolean);
-      if (segs.length > 0) {
-        let px = segs[0].x0, py = segs[0].y0;
-        d = `M ${px} ${py}`;
-        for (const seg of segs) {
-          const forward = ptEq([px, py], [seg.x0, seg.y0]);
-          const ex = forward ? seg.x1 : seg.x0, ey = forward ? seg.y1 : seg.y0;
-          if (seg.type === 'L') d += ` L ${ex} ${ey}`;
-          else if (seg.type === 'C') d += ` C ${forward ? `${seg.c1x} ${seg.c1y} ${seg.c2x} ${seg.c2y}` : `${seg.c2x} ${seg.c2y} ${seg.c1x} ${seg.c1y}`} ${ex} ${ey}`;
-          else {
-            const cpx = forward ? seg.cx : seg.x0 + seg.x1 - seg.cx;
-            const cpy = forward ? seg.cy : seg.y0 + seg.y1 - seg.cy;
-            d += ` Q ${cpx} ${cpy} ${ex} ${ey}`;
-          }
-          px = ex; py = ey;
-        }
-        d += ' Z';
+      d = segmentsToPathD(f.segmentIndices);
+      if (f.holeSegmentIndices) {
+        for (const hole of f.holeSegmentIndices) d += segmentsToPathD(hole);
       }
     } else if (f.polygon) {
       d = `M ${f.polygon[0][0]} ${f.polygon[0][1]}`;
       for (let i = 1; i < f.polygon.length; i++) d += ` L ${f.polygon[i][0]} ${f.polygon[i][1]}`;
       d += ' Z';
     }
-    if (d) svg += `  <path d="${d}" fill="${f.color}" stroke="none"/>\n`;
+    if (d) svg += `  <path d="${d.trim()}" fill="${f.color}" fill-rule="evenodd" stroke="none"/>\n`;
   });
   segments.forEach((seg) => {
     const w_ = seg.strokeWidth ?? DEFAULT_STROKE_WIDTH;
@@ -1425,6 +1518,7 @@ function penMouseUp(e) {
   const result = [];
   const toRemove = new Set();
   const oldToNew = new Map();
+  const oldToNewMulti = new Map();
   let newIdx = 0;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
@@ -1433,6 +1527,7 @@ function penMouseUp(e) {
       toRemove.add(i);
       splits.sort((a, b) => (a.ellipseParam ?? a.arcIdx + a.t) - (b.ellipseParam ?? b.arcIdx + b.t));
       const pieces = splitEllipseAtCrossings(seg, splits);
+      oldToNewMulti.set(i, [...Array(pieces.length).keys()].map(j => newIdx + j));
       result.push(...pieces);
       newIdx += pieces.length;
     } else if (splits) {
@@ -1440,6 +1535,7 @@ function penMouseUp(e) {
       splits.sort((a, b) => a.u - b.u);
       let u0 = 0;
       let prev = seg;
+      const startIdx = newIdx;
       for (const s of splits) {
         if (seg.type === 'L') {
           const props = withStrokeProps(seg);
@@ -1463,6 +1559,7 @@ function penMouseUp(e) {
         result.push(prev);
       }
       newIdx = result.length;
+      oldToNewMulti.set(i, [...Array(newIdx - startIdx).keys()].map(j => startIdx + j));
     } else {
       oldToNew.set(i, newIdx);
       result.push(segments[i]);
@@ -1472,10 +1569,27 @@ function penMouseUp(e) {
   result.push(...newPieces);
   segments = result;
 
+  const remapFillIndices = (indices) => {
+    const out = [];
+    for (const idx of indices) {
+      if (toRemove.has(idx)) {
+        const m = oldToNewMulti.get(idx);
+        if (m?.length) out.push(...m);
+      } else {
+        const m = oldToNew.get(idx);
+        if (m !== undefined) out.push(m);
+      }
+    }
+    return out;
+  };
   fills = fills.filter(f => {
     if (!f.segmentIndices) return true;
-    if (f.segmentIndices.some(idx => toRemove.has(idx))) return false;
-    f.segmentIndices = f.segmentIndices.map(idx => oldToNew.get(idx) ?? idx);
+    const newIndices = remapFillIndices(f.segmentIndices);
+    if (newIndices.length < 2) return false;
+    f.segmentIndices = newIndices;
+    if (f.holeSegmentIndices) {
+      f.holeSegmentIndices = f.holeSegmentIndices.map(remapFillIndices).filter(h => h.length >= 2);
+    }
     return true;
   });
 
@@ -1793,7 +1907,9 @@ function paintBucketMouseDown(e) {
     }
     const contour = findFillContour(p.x, p.y);
     if (contour) {
-      fills.push({ color: fillColor, segmentIndices: contour });
+      const fill = { color: fillColor, segmentIndices: contour.outer };
+      if (contour.holes && contour.holes.length > 0) fill.holeSegmentIndices = contour.holes;
+      fills.push(fill);
       render();
     } else {
       undo();
@@ -1869,15 +1985,21 @@ document.addEventListener('keydown', (e) => {
       pushUndo();
       const toRemove = new Set([...selectedIndices].sort((a, b) => b - a));
       toRemove.forEach(i => segments.splice(i, 1));
+      const hasDeletedRef = (f) =>
+        f.segmentIndices?.some(idx => toRemove.has(idx)) ||
+        f.holeSegmentIndices?.some(hole => hole.some(idx => toRemove.has(idx)));
+      const remapIdx = (idx) => {
+        let newIdx = idx;
+        for (const r of toRemove) if (r < idx) newIdx--;
+        return newIdx;
+      };
       fills = fills.filter(f => {
         if (!f.segmentIndices) return true;
-        const refsDeleted = f.segmentIndices.some(idx => toRemove.has(idx));
-        if (refsDeleted) return false;
-        f.segmentIndices = f.segmentIndices.map(idx => {
-          let newIdx = idx;
-          for (const r of toRemove) if (r < idx) newIdx--;
-          return newIdx;
-        });
+        if (hasDeletedRef(f)) return false;
+        f.segmentIndices = f.segmentIndices.map(remapIdx);
+        if (f.holeSegmentIndices) {
+          f.holeSegmentIndices = f.holeSegmentIndices.map(hole => hole.map(remapIdx)).filter(h => h.length >= 2);
+        }
         return true;
       });
       selectedIndices.clear();
@@ -1919,10 +2041,11 @@ document.addEventListener('keydown', (e) => {
       for (const fi of selectedFillIndices) {
         const f = fills[fi];
         if (f.segmentIndices) {
-          const newIndices = [];
-          for (const i of f.segmentIndices) {
+          const oldToNew = new Map();
+          const copySegment = (i) => {
+            if (oldToNew.has(i)) return oldToNew.get(i);
             const seg = segments[i];
-            if (!seg) continue;
+            if (!seg) return null;
             const copy = JSON.parse(JSON.stringify(seg));
             if (copy.type === 'E') {
               copy.cx += offset; copy.cy += offset;
@@ -1933,9 +2056,18 @@ document.addEventListener('keydown', (e) => {
               if (copy.type === 'C') { copy.c1x += offset; copy.c1y += offset; copy.c2x += offset; copy.c2y += offset; }
             }
             segments.push(copy);
-            newIndices.push(segments.length - 1);
+            const newIdx = segments.length - 1;
+            oldToNew.set(i, newIdx);
+            return newIdx;
+          };
+          const newIndices = f.segmentIndices.map(copySegment).filter(i => i !== null);
+          const newFill = { color: f.color, segmentIndices: newIndices };
+          if (f.holeSegmentIndices && f.holeSegmentIndices.length > 0) {
+            newFill.holeSegmentIndices = f.holeSegmentIndices.map(hole =>
+              hole.map(copySegment).filter(i => i !== null)
+            ).filter(h => h.length >= 2);
           }
-          fills.push({ color: f.color, segmentIndices: newIndices });
+          fills.push(newFill);
         } else if (f.polygon) {
           const poly = f.polygon.map(([x, y]) => [x + offset, y + offset]);
           fills.push({ color: f.color, polygon: poly });
