@@ -1640,7 +1640,7 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
     }
   } else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && selectedIndices.size > 0) {
-    const step = e.shiftKey ? 10 : 1;
+    const step = e.shiftKey ? 20 : 1;
     let dx = 0, dy = 0;
     if (e.key === 'ArrowUp') dy = -step;
     else if (e.key === 'ArrowDown') dy = step;
