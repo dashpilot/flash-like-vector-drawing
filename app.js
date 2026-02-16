@@ -843,26 +843,30 @@ function screenToCanvas(e) {
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
-// --- Paint bucket: simple cycle tracing, follow connected segments ---
+// --- Paint bucket: find smallest enclosing cycle (Photoshop-like: slicing creates new boundaries) ---
 function findFillContour(startX, startY) {
   const eps = 2;
   const key = (x, y) => `${Math.round(x / eps)},${Math.round(y / eps)}`;
   const segAtKey = new Map();
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
+    if (seg.type === 'E') continue; // E handled via arcs when split; unsplit E has no x0,y0,x1,y1
     const k0 = key(seg.x0, seg.y0), k1 = key(seg.x1, seg.y1);
     if (!segAtKey.has(k0)) segAtKey.set(k0, []);
     segAtKey.get(k0).push({ i, which: 'start' });
     if (!segAtKey.has(k1)) segAtKey.set(k1, []);
     segAtKey.get(k1).push({ i, which: 'end' });
   }
-  const used = new Set();
+  const cyclesContainingPoint = [];
+  const cycleKey = (path) => [...path].sort((a, b) => a - b).join(',');
+  const seenCycles = new Set();
   for (let start = 0; start < segments.length; start++) {
-    if (used.has(start)) continue;
+    const seg = segments[start];
+    if (seg.type === 'E') continue;
     const path = [];
     let cur = start;
-    let pt = [segments[start].x1, segments[start].y1];
-    const startPt = [segments[start].x0, segments[start].y0];
+    let pt = [seg.x1, seg.y1];
+    const startPt = [seg.x0, seg.y0];
     path.push(start);
     for (let _ = 0; _ < segments.length + 2; _++) {
       const k = key(pt[0], pt[1]);
@@ -876,40 +880,48 @@ function findFillContour(startX, startY) {
       }
       if (!next) break;
       path.push(next.i);
-      used.add(next.i);
-      const seg = segments[next.i];
-      pt = next.which === 'start' ? [seg.x1, seg.y1] : [seg.x0, seg.y0];
+      const s = segments[next.i];
+      pt = next.which === 'start' ? [s.x1, s.y1] : [s.x0, s.y0];
       cur = next.i;
       if (Math.hypot(pt[0] - startPt[0], pt[1] - startPt[1]) < eps * 2) {
         if (path.length >= 3) {
-          const pts = [];
-          for (const idx of path) {
-            const s = segments[idx];
-            pts.push([s.x0, s.y0], [s.x1, s.y1]);
-          }
-          const seen = new Set();
-          const poly = [];
-          for (const p of pts) {
-            const kp = key(p[0], p[1]);
-            if (!seen.has(kp)) { seen.add(kp); poly.push(p); }
-          }
-          if (poly.length >= 3) {
-            const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
-            const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
-            poly.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
-            let inside = false;
-            for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-              const [xi, yi] = poly[i], [xj, yj] = poly[j];
-              if (((yi > startY) !== (yj > startY)) && (startX < (xj - xi) * (startY - yi) / (yj - yi) + xi)) inside = !inside;
+          const ck = cycleKey(path);
+          if (!seenCycles.has(ck)) {
+            seenCycles.add(ck);
+            const pts = [];
+            for (const idx of path) {
+              const sb = segments[idx];
+              pts.push([sb.x0, sb.y0], [sb.x1, sb.y1]);
             }
-            if (inside) return path;
+            const ptSeen = new Set();
+            const poly = [];
+            for (const p of pts) {
+              const kp = key(p[0], p[1]);
+              if (!ptSeen.has(kp)) { ptSeen.add(kp); poly.push(p); }
+            }
+            if (poly.length >= 3) {
+              const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+              const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+              poly.sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+              let inside = false;
+              for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                const [xi, yi] = poly[i], [xj, yj] = poly[j];
+                if (((yi > startY) !== (yj > startY)) && (startX < (xj - xi) * (startY - yi) / (yj - yi) + xi)) inside = !inside;
+              }
+              if (inside) {
+                const area = Math.abs(poly.reduce((sum, p, i) => sum + p[0] * (poly[(i + 1) % poly.length][1] - poly[(i - 1 + poly.length) % poly.length][1]), 0) / 2);
+                cyclesContainingPoint.push({ path, area });
+              }
+            }
           }
         }
         break;
       }
     }
   }
-  return null;
+  if (cyclesContainingPoint.length === 0) return null;
+  cyclesContainingPoint.sort((a, b) => a.area - b.area);
+  return cyclesContainingPoint[0].path;
 }
 
 function snapToNearestEndpoint(x, y) {
@@ -1469,11 +1481,15 @@ function ovalMouseUp(e) {
 // --- Paint bucket tool ---
 function paintBucketMouseDown(e) {
   const p = screenToCanvas(e);
+  pushUndo(); // save state before split+fill
+  // Ensure all crossing segments are split (lines act as knives)
+  while (splitSegmentsAtAllIntersections()) { /* repeat until no more intersections */ }
   const contour = findFillContour(p.x, p.y);
   if (contour) {
-    pushUndo();
     fills.push({ color: fillColor, segmentIndices: contour });
     render();
+  } else {
+    undo(); // revert split when click didn't hit a fillable region
   }
 }
 
