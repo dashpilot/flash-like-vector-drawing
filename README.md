@@ -47,10 +47,10 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 Open `index.html` in a browser, or use a local server:
 
 ```bash
-python3 -m http.server 3333
+npx serve
 ```
 
-Then visit http://localhost:3333
+Then visit http://localhost:3000 (serve will automatically install if needed)
 
 ## Press the :star: button
 
