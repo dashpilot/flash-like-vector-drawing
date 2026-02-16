@@ -28,7 +28,7 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 - **Drag near an endpoint** (within 10px) — move only that point of the line
 - **Drag on segment body** — pull/reshape the curve; straight lines become curves
 - **Drag on shared vertex** (where two+ lines meet) — moves that point for all connected segments
-- **Command-Z** (Ctrl-Z) — undo | **Command-Shift-Z** — redo
+- **Command-Z** (Ctrl-Z) — undo | **Command-Shift-Z** — redo | **Command-D** (Ctrl-D) — duplicate
 - **Properties panel** — Right side: stroke width, stroke color (swatches), paint bucket fill color
 
 ### Line as Knife
@@ -40,6 +40,7 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 
 - **V** — Selection tool
 - **P** — Pen/Line tool
+- **Command-D** (Ctrl-D) — Duplicate selected segments or fills
 - **Delete / Backspace** — Delete selected segment(s)
 
 ## Run locally

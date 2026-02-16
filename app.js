@@ -1245,6 +1245,57 @@ document.addEventListener('keydown', (e) => {
       render();
       e.preventDefault();
     }
+  } else if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
+    if (selectedIndices.size > 0) {
+      pushUndo();
+      const offset = 20;
+      const sorted = [...selectedIndices].sort((a, b) => a - b);
+      const oldToNew = new Map();
+      for (const i of sorted) {
+        const seg = segments[i];
+        const copy = JSON.parse(JSON.stringify(seg));
+        copy.x0 += offset; copy.y0 += offset;
+        copy.x1 += offset; copy.y1 += offset;
+        if (copy.type === 'Q') { copy.cx += offset; copy.cy += offset; }
+        if (copy.type === 'C') { copy.c1x += offset; copy.c1y += offset; copy.c2x += offset; copy.c2y += offset; }
+        const newIdx = segments.length;
+        segments.push(copy);
+        oldToNew.set(i, newIdx);
+      }
+      selectedIndices.clear();
+      sorted.forEach(i => selectedIndices.add(oldToNew.get(i)));
+      render();
+      e.preventDefault();
+    } else if (selectedFillIndices.size > 0) {
+      pushUndo();
+      const offset = 20;
+      const count = selectedFillIndices.size;
+      for (const fi of selectedFillIndices) {
+        const f = fills[fi];
+        if (f.segmentIndices) {
+          const newIndices = [];
+          for (const i of f.segmentIndices) {
+            const seg = segments[i];
+            if (!seg) continue;
+            const copy = JSON.parse(JSON.stringify(seg));
+            copy.x0 += offset; copy.y0 += offset;
+            copy.x1 += offset; copy.y1 += offset;
+            if (copy.type === 'Q') { copy.cx += offset; copy.cy += offset; }
+            if (copy.type === 'C') { copy.c1x += offset; copy.c1y += offset; copy.c2x += offset; copy.c2y += offset; }
+            segments.push(copy);
+            newIndices.push(segments.length - 1);
+          }
+          fills.push({ color: f.color, segmentIndices: newIndices });
+        } else if (f.polygon) {
+          const poly = f.polygon.map(([x, y]) => [x + offset, y + offset]);
+          fills.push({ color: f.color, polygon: poly });
+        }
+      }
+      selectedFillIndices.clear();
+      for (let i = fills.length - count; i < fills.length; i++) selectedFillIndices.add(i);
+      render();
+      e.preventDefault();
+    }
   } else if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
     if (e.shiftKey) {
       redo();
