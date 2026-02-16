@@ -31,7 +31,8 @@ const COLOR_SWATCHES = [
   '#2563eb', '#7c3aed', '#db2777', '#b91c1c', '#9a3412', '#854d0e'
 ];
 
-// Segment format: { type: 'L'|'Q', x0, y0, x1, y1, cx?, cy?, strokeWidth?, strokeColor?, strokeDashArray? }
+// Segment format: { type: 'L'|'Q'|'C'|'E', x0, y0, x1, y1, cx?, cy?, c1x?, c1y?, c2x?, c2y?, strokeWidth?, strokeColor?, strokeDashArray? }
+// E = ellipse: { type: 'E', cx, cy, rx, ry, ...props } — single closed shape, split only when crossed
 let segments = [];
 let fills = []; // { color, polygon: [[x,y],...] | segmentIndices: [...] }
 let selectedIndices = new Set();
@@ -64,6 +65,102 @@ function lineLineIntersection(x1, y1, x2, y2, x3, y3, x4, y4) {
   return null;
 }
 
+// Cubic Bézier coefficients: x(t) = bx[0]*t^3 + bx[1]*t^2 + bx[2]*t + bx[3]
+function cubicBezierCoeffs(p0, p1, p2, p3) {
+  return [
+    -p0 + 3 * p1 - 3 * p2 + p3,
+    3 * p0 - 6 * p1 + 3 * p2,
+    -3 * p0 + 3 * p1,
+    p0
+  ];
+}
+
+function cubicRoots(P) {
+  const eps = 1e-10;
+  const sgn = (x) => (x < 0 ? -1 : x > 0 ? 1 : 0);
+  let a = P[0], b = P[1], c = P[2], d = P[3];
+  if (Math.abs(a) < eps) {
+    if (Math.abs(b) < eps) {
+      if (Math.abs(c) < eps) return [];
+      const t = -d / c;
+      return (t >= 0 && t <= 1) ? [t] : [];
+    }
+    const D = c * c - 4 * b * d;
+    if (D < 0) return [];
+    const sq = Math.sqrt(D);
+    const roots = [];
+    const t1 = (-c + sq) / (2 * b);
+    const t2 = (-c - sq) / (2 * b);
+    if (t1 >= 0 && t1 <= 1) roots.push(t1);
+    if (t2 >= 0 && t2 <= 1 && Math.abs(t2 - t1) > eps) roots.push(t2);
+    return roots;
+  }
+  const A = b / a, B = c / a, C = d / a;
+  const Q = (3 * B - A * A) / 9;
+  const R = (9 * A * B - 27 * C - 2 * A * A * A) / 54;
+  const D = Q * Q * Q + R * R;
+  const roots = [];
+  if (D >= 0) {
+    const S = sgn(R + Math.sqrt(D)) * Math.pow(Math.abs(R + Math.sqrt(D)), 1 / 3);
+    const T = sgn(R - Math.sqrt(D)) * Math.pow(Math.abs(R - Math.sqrt(D)), 1 / 3);
+    const t0 = -A / 3 + (S + T);
+    if (t0 >= 0 && t0 <= 1) roots.push(t0);
+    const im = Math.abs(Math.sqrt(3) * (S - T) / 2);
+    if (im < eps) {
+      const t1 = -A / 3 - (S + T) / 2;
+      if (t1 >= 0 && t1 <= 1 && roots.every(r => Math.abs(r - t1) > eps)) roots.push(t1);
+    }
+  } else {
+    const th = Math.acos(R / Math.sqrt(-Q * Q * Q));
+    for (const k of [0, 1, 2]) {
+      const t = 2 * Math.sqrt(-Q) * Math.cos((th + 2 * Math.PI * k) / 3) - A / 3;
+      if (t >= 0 && t <= 1 && roots.every(r => Math.abs(r - t) > eps)) roots.push(t);
+    }
+  }
+  return roots.sort((a, b) => a - b);
+}
+
+function lineCubicIntersection(lx0, ly0, lx1, ly1, seg) {
+  const A = ly1 - ly0, B = lx0 - lx1;
+  const C = lx0 * (ly0 - ly1) + ly0 * (lx1 - lx0);
+  const bx = cubicBezierCoeffs(seg.x0, seg.c1x, seg.c2x, seg.x1);
+  const by = cubicBezierCoeffs(seg.y0, seg.c1y, seg.c2y, seg.y1);
+  const P = [
+    A * bx[0] + B * by[0],
+    A * bx[1] + B * by[1],
+    A * bx[2] + B * by[2],
+    A * bx[3] + B * by[3] + C
+  ];
+  const tRoots = cubicRoots(P);
+  const results = [];
+  const eps = 1e-6;
+  for (const t of tRoots) {
+    if (t <= eps || t >= 1 - eps) continue;
+    const px = bx[0] * t * t * t + bx[1] * t * t + bx[2] * t + bx[3];
+    const py = by[0] * t * t * t + by[1] * t * t + by[2] * t + by[3];
+    let s;
+    if (Math.abs(lx1 - lx0) > eps) s = (px - lx0) / (lx1 - lx0);
+    else s = (py - ly0) / (ly1 - ly0);
+    if (s <= eps || s >= 1 - eps) continue;
+    results.push({ x: px, y: py, t: s, u: t });
+  }
+  return results;
+}
+
+function splitCubicAt(seg, t) {
+  const props = withStrokeProps(seg);
+  const p01x = seg.x0 + t * (seg.c1x - seg.x0), p01y = seg.y0 + t * (seg.c1y - seg.y0);
+  const p12x = seg.c1x + t * (seg.c2x - seg.c1x), p12y = seg.c1y + t * (seg.c2y - seg.c1y);
+  const p23x = seg.c2x + t * (seg.x1 - seg.c2x), p23y = seg.c2y + t * (seg.y1 - seg.c2y);
+  const p012x = p01x + t * (p12x - p01x), p012y = p01y + t * (p12y - p01y);
+  const p123x = p12x + t * (p23x - p12x), p123y = p12y + t * (p23y - p12y);
+  const px = p012x + t * (p123x - p012x), py = p012y + t * (p123y - p012y);
+  return [
+    { type: 'C', x0: seg.x0, y0: seg.y0, c1x: p01x, c1y: p01y, c2x: p012x, c2y: p012y, x1: px, y1: py, ...props },
+    { type: 'C', x0: px, y0: py, c1x: p123x, c1y: p123y, c2x: p23x, c2y: p23y, x1: seg.x1, y1: seg.y1, ...props }
+  ];
+}
+
 function withStrokeProps(seg, overrides = {}) {
   return {
     strokeWidth: seg.strokeWidth ?? DEFAULT_STROKE_WIDTH,
@@ -73,32 +170,153 @@ function withStrokeProps(seg, overrides = {}) {
   };
 }
 
-// --- Split all crossing L segments at their intersections ---
+// --- Ellipse (single closed shape): 4 cubic arcs, split only when crossed ---
+const OVAL_K = 4 / 3 * (Math.SQRT2 - 1);
+function ellipseToCubicArcs(cx, cy, rx, ry, props = {}) {
+  const k = OVAL_K;
+  return [
+    { type: 'C', x0: cx + rx, y0: cy, c1x: cx + rx, c1y: cy + ry * k, c2x: cx + rx * k, c2y: cy + ry, x1: cx, y1: cy + ry, ...props },
+    { type: 'C', x0: cx, y0: cy + ry, c1x: cx - rx * k, c1y: cy + ry, c2x: cx - rx, c2y: cy + ry * k, x1: cx - rx, y1: cy, ...props },
+    { type: 'C', x0: cx - rx, y0: cy, c1x: cx - rx, c1y: cy - ry * k, c2x: cx - rx * k, c2y: cy - ry, x1: cx, y1: cy - ry, ...props },
+    { type: 'C', x0: cx, y0: cy - ry, c1x: cx + rx * k, c1y: cy - ry, c2x: cx + rx, c2y: cy - ry * k, x1: cx + rx, y1: cy, ...props }
+  ];
+}
+
+function lineEllipseIntersection(lx0, ly0, lx1, ly1, seg) {
+  const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, {});
+  const results = [];
+  for (let ai = 0; ai < 4; ai++) {
+    const list = lineCubicIntersection(lx0, ly0, lx1, ly1, arcs[ai]);
+    for (const r of list) {
+      results.push({ arcIdx: ai, t: r.u, x: r.x, y: r.y, lineT: r.t, ellipseParam: ai + r.u });
+    }
+  }
+  return results.sort((a, b) => a.ellipseParam - b.ellipseParam);
+}
+
+function splitEllipseAtCrossings(seg, crossings) {
+  if (crossings.length < 2) return [seg];
+  const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, withStrokeProps(seg));
+  const props = withStrokeProps(seg);
+  const pieces = [];
+  for (let p = 0; p < crossings.length; p++) {
+    const c1 = crossings[p];
+    const c2 = crossings[(p + 1) % crossings.length];
+    const segs = extractEllipseArc(arcs, c1.arcIdx, c1.t, c2.arcIdx, c2.t, props);
+    pieces.push(...segs);
+  }
+  return pieces;
+}
+
+function extractEllipseArc(arcs, startArc, startT, endArc, endT, props) {
+  const result = [];
+  let curArc = startArc;
+  let curT = startT;
+  const endParam = endArc + endT;
+  const targetParam = endParam <= startArc + startT ? endParam + 4 : endParam;
+  let param = startArc + startT;
+  while (param < targetParam - 1e-9) {
+    const a = arcs[curArc % 4];
+    const arcEnd = curArc + 1;
+    if (arcEnd <= targetParam) {
+      if (curT > 1e-9) {
+        const [_, right] = splitCubicAt({ ...a, ...props }, curT);
+        result.push(right);
+      } else {
+        result.push({ ...a, ...props });
+      }
+      curArc++;
+      curT = 0;
+      param = arcEnd;
+    } else {
+      const tEnd = targetParam - curArc;
+      if (curT > 1e-9) {
+        const [_, right] = splitCubicAt({ ...a, ...props }, curT);
+        const tLoc = (tEnd - curT) / (1 - curT);
+        if (tLoc > 1e-9) {
+          if (tLoc < 1 - 1e-9) {
+            const [left] = splitCubicAt(right, tLoc);
+            result.push(left);
+          } else {
+            result.push(right);
+          }
+        }
+      } else {
+        if (tEnd > 1e-9) {
+          if (tEnd < 1 - 1e-9) {
+            const [left] = splitCubicAt({ ...a, ...props }, tEnd);
+            result.push(left);
+          } else {
+            result.push({ ...a, ...props });
+          }
+        }
+      }
+      break;
+    }
+  }
+  return result;
+}
+
+// --- Split all crossing segments at their intersections (L-L, L-C, C-L, L-E, E-L) ---
 function splitSegmentsAtAllIntersections() {
   const splits = new Map(); // segIndex -> sorted list of { u, x, y }
+  const eps = 1e-6;
   for (let i = 0; i < segments.length; i++) {
     const a = segments[i];
-    if (a.type !== 'L') continue;
     for (let j = i + 1; j < segments.length; j++) {
       const b = segments[j];
-      if (b.type !== 'L') continue;
-      const isec = lineLineIntersection(a.x0, a.y0, a.x1, a.y1, b.x0, b.y0, b.x1, b.y1);
-      if (!isec) continue;
-      const eps = 1e-6;
-      if (isec.t <= eps || isec.t >= 1 - eps || isec.u <= eps || isec.u >= 1 - eps) continue;
-      const x = isec.x, y = isec.y;
-      if (!splits.has(i)) splits.set(i, []);
-      const existing = splits.get(i);
-      if (existing.every(s => Math.abs(s.u - isec.t) > eps)) existing.push({ u: isec.t, x, y });
-      if (!splits.has(j)) splits.set(j, []);
-      const existingJ = splits.get(j);
-      if (existingJ.every(s => Math.abs(s.u - isec.u) > eps)) existingJ.push({ u: isec.u, x, y });
+      if (a.type === 'L' && b.type === 'L') {
+        const isec = lineLineIntersection(a.x0, a.y0, a.x1, a.y1, b.x0, b.y0, b.x1, b.y1);
+        if (!isec) continue;
+        if (isec.t <= eps || isec.t >= 1 - eps || isec.u <= eps || isec.u >= 1 - eps) continue;
+        const x = isec.x, y = isec.y;
+        if (!splits.has(i)) splits.set(i, []);
+        if (splits.get(i).every(s => Math.abs(s.u - isec.t) > eps)) splits.get(i).push({ u: isec.t, x, y });
+        if (!splits.has(j)) splits.set(j, []);
+        if (splits.get(j).every(s => Math.abs(s.u - isec.u) > eps)) splits.get(j).push({ u: isec.u, x, y });
+      } else if (a.type === 'L' && b.type === 'C') {
+        const list = lineCubicIntersection(a.x0, a.y0, a.x1, a.y1, b);
+        for (const isec of list) {
+          if (!splits.has(i)) splits.set(i, []);
+          if (splits.get(i).every(s => Math.abs(s.u - isec.t) > eps)) splits.get(i).push({ u: isec.t, x: isec.x, y: isec.y });
+          if (!splits.has(j)) splits.set(j, []);
+          if (splits.get(j).every(s => Math.abs(s.u - isec.u) > eps)) splits.get(j).push({ u: isec.u, x: isec.x, y: isec.y });
+        }
+      } else if (a.type === 'C' && b.type === 'L') {
+        const list = lineCubicIntersection(b.x0, b.y0, b.x1, b.y1, a);
+        for (const isec of list) {
+          if (!splits.has(i)) splits.set(i, []);
+          if (splits.get(i).every(s => Math.abs(s.u - isec.u) > eps)) splits.get(i).push({ u: isec.u, x: isec.x, y: isec.y });
+          if (!splits.has(j)) splits.set(j, []);
+          if (splits.get(j).every(s => Math.abs(s.u - isec.t) > eps)) splits.get(j).push({ u: isec.t, x: isec.x, y: isec.y });
+        }
+      } else if (a.type === 'L' && b.type === 'E') {
+        const list = lineEllipseIntersection(a.x0, a.y0, a.x1, a.y1, b);
+        if (list.length >= 2) {
+          for (const isec of list) {
+            if (!splits.has(i)) splits.set(i, []);
+            if (splits.get(i).every(s => Math.abs(s.u - isec.lineT) > eps)) splits.get(i).push({ u: isec.lineT, x: isec.x, y: isec.y });
+          }
+          if (!splits.has(j)) splits.set(j, []);
+          splits.set(j, list);
+        }
+      } else if (a.type === 'E' && b.type === 'L') {
+        const list = lineEllipseIntersection(b.x0, b.y0, b.x1, b.y1, a);
+        if (list.length >= 2) {
+          for (const isec of list) {
+            if (!splits.has(j)) splits.set(j, []);
+            if (splits.get(j).every(s => Math.abs(s.u - isec.lineT) > eps)) splits.get(j).push({ u: isec.lineT, x: isec.x, y: isec.y });
+          }
+          if (!splits.has(i)) splits.set(i, []);
+          splits.set(i, list);
+        }
+      }
     }
   }
   if (splits.size === 0) return false;
   const toRemove = new Set();
   const newSegments = [];
-  const indexMap = []; // newIndex -> was from old index (for fill update)
+  const indexMap = [];
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     const segSplits = splits.get(i);
@@ -108,20 +326,42 @@ function splitSegmentsAtAllIntersections() {
       continue;
     }
     toRemove.add(i);
-    segSplits.sort((a, b) => a.u - b.u);
+    if (seg.type === 'E') segSplits.sort((a, b) => (a.ellipseParam ?? a.arcIdx + a.t) - (b.ellipseParam ?? b.arcIdx + b.t));
+    else segSplits.sort((a, b) => a.u - b.u);
     let u0 = 0;
     const props = withStrokeProps(seg);
-    for (const s of segSplits) {
+    if (seg.type === 'L') {
+      for (const s of segSplits) {
+        const x0 = seg.x0 + u0 * (seg.x1 - seg.x0);
+        const y0 = seg.y0 + u0 * (seg.y1 - seg.y0);
+        newSegments.push({ type: 'L', x0, y0, x1: s.x, y1: s.y, ...props });
+        indexMap.push(i);
+        u0 = s.u;
+      }
       const x0 = seg.x0 + u0 * (seg.x1 - seg.x0);
       const y0 = seg.y0 + u0 * (seg.y1 - seg.y0);
-      newSegments.push({ type: 'L', x0, y0, x1: s.x, y1: s.y, ...props });
+      newSegments.push({ type: 'L', x0, y0, x1: seg.x1, y1: seg.y1, ...props });
       indexMap.push(i);
-      u0 = s.u;
+    } else if (seg.type === 'C') {
+      let prev = seg;
+      for (const s of segSplits) {
+        const t = (s.u - u0) / (1 - u0);
+        const [left, right] = splitCubicAt(prev, t);
+        newSegments.push(left);
+        indexMap.push(i);
+        prev = right;
+        u0 = s.u;
+      }
+      newSegments.push(prev);
+      indexMap.push(i);
+    } else if (seg.type === 'E') {
+      const list = segSplits;
+      const pieces = splitEllipseAtCrossings(seg, list);
+      for (const p of pieces) {
+        newSegments.push(p);
+        indexMap.push(i);
+      }
     }
-    const x0 = seg.x0 + u0 * (seg.x1 - seg.x0);
-    const y0 = seg.y0 + u0 * (seg.y1 - seg.y0);
-    newSegments.push({ type: 'L', x0, y0, x1: seg.x1, y1: seg.y1, ...props });
-    indexMap.push(i);
   }
   segments = newSegments;
   const oldToNew = new Map();
@@ -314,6 +554,15 @@ function cubicParametricPoint(seg, t) {
   };
 }
 
+function distToEllipse(px, py, seg) {
+  const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, {});
+  let minD = Infinity;
+  for (const a of arcs) {
+    minD = Math.min(minD, distToCubic(px, py, a));
+  }
+  return minD;
+}
+
 function distToCubic(px, py, seg) {
   let minD = Infinity;
   for (let i = 0; i <= 30; i++) {
@@ -353,6 +602,8 @@ function hitTestSegment(canvasX, canvasY) {
     let d;
     if (seg.type === 'L') {
       d = distToSegment(canvasX, canvasY, seg.x0, seg.y0, seg.x1, seg.y1);
+    } else if (seg.type === 'E') {
+      d = distToEllipse(canvasX, canvasY, seg);
     } else if (seg.type === 'C') {
       d = distToCubic(canvasX, canvasY, seg);
     } else {
@@ -403,6 +654,12 @@ function drawSegment(seg, opts = {}) {
   if (seg.type === 'L') {
     ctx.moveTo(seg.x0, seg.y0);
     ctx.lineTo(seg.x1, seg.y1);
+  } else if (seg.type === 'E') {
+    const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, {});
+    ctx.moveTo(arcs[0].x0, arcs[0].y0);
+    for (const a of arcs) {
+      ctx.bezierCurveTo(a.c1x, a.c1y, a.c2x, a.c2y, a.x1, a.y1);
+    }
   } else if (seg.type === 'C') {
     ctx.moveTo(seg.x0, seg.y0);
     ctx.bezierCurveTo(seg.c1x, seg.c1y, seg.c2x, seg.c2y, seg.x1, seg.y1);
@@ -438,20 +695,49 @@ function render() {
       const segs = f.segmentIndices.map(i => segments[i]).filter(Boolean);
       if (segs.length > 0) {
         const ptEq = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 2;
-        let px = segs[0].x0, py = segs[0].y0;
-        ctx.moveTo(px, py);
-        for (const seg of segs) {
-          const forward = ptEq([px, py], [seg.x0, seg.y0]);
-          const ex = forward ? seg.x1 : seg.x0, ey = forward ? seg.y1 : seg.y0;
-          if (seg.type === 'L') ctx.lineTo(ex, ey);
-          else if (seg.type === 'C') {
-            if (forward) ctx.bezierCurveTo(seg.c1x, seg.c1y, seg.c2x, seg.c2y, ex, ey);
-            else ctx.bezierCurveTo(seg.c2x, seg.c2y, seg.c1x, seg.c1y, ex, ey);
-          } else {
-            if (forward) ctx.quadraticCurveTo(seg.cx, seg.cy, ex, ey);
-            else ctx.quadraticCurveTo(seg.x0 + seg.x1 - seg.cx, seg.y0 + seg.y1 - seg.cy, ex, ey);
-          }
+        let px, py;
+        const first = segs[0];
+        if (first.type === 'E') {
+          const arcs = ellipseToCubicArcs(first.cx, first.cy, first.rx, first.ry, {});
+          ctx.moveTo(arcs[0].x0, arcs[0].y0);
+          for (const a of arcs) ctx.bezierCurveTo(a.c1x, a.c1y, a.c2x, a.c2y, a.x1, a.y1);
+          px = arcs[3].x1; py = arcs[3].y1;
+        } else {
+          px = first.x0; py = first.y0;
+          ctx.moveTo(px, py);
+          const ex = first.x1, ey = first.y1;
+          if (first.type === 'L') ctx.lineTo(ex, ey);
+          else if (first.type === 'C') ctx.bezierCurveTo(first.c1x, first.c1y, first.c2x, first.c2y, ex, ey);
+          else ctx.quadraticCurveTo(first.cx, first.cy, ex, ey);
           px = ex; py = ey;
+        }
+        for (let i = 1; i < segs.length; i++) {
+          const seg = segs[i];
+          if (seg.type === 'E') {
+            const arcs = ellipseToCubicArcs(seg.cx, seg.cy, seg.rx, seg.ry, {});
+            if (ptEq([px, py], [arcs[0].x0, arcs[0].y0])) {
+              for (const a of arcs) ctx.bezierCurveTo(a.c1x, a.c1y, a.c2x, a.c2y, a.x1, a.y1);
+              px = arcs[3].x1; py = arcs[3].y1;
+            } else {
+              for (let j = 3; j >= 0; j--) {
+                const a = arcs[j];
+                ctx.bezierCurveTo(a.c2x, a.c2y, a.c1x, a.c1y, a.x0, a.y0);
+              }
+              px = arcs[0].x0; py = arcs[0].y0;
+            }
+          } else {
+            const forward = ptEq([px, py], [seg.x0, seg.y0]);
+            const ex = forward ? seg.x1 : seg.x0, ey = forward ? seg.y1 : seg.y0;
+            if (seg.type === 'L') ctx.lineTo(ex, ey);
+            else if (seg.type === 'C') {
+              if (forward) ctx.bezierCurveTo(seg.c1x, seg.c1y, seg.c2x, seg.c2y, ex, ey);
+              else ctx.bezierCurveTo(seg.c2x, seg.c2y, seg.c1x, seg.c1y, ex, ey);
+            } else {
+              if (forward) ctx.quadraticCurveTo(seg.cx, seg.cy, ex, ey);
+              else ctx.quadraticCurveTo(seg.x0 + seg.x1 - seg.cx, seg.y0 + seg.y1 - seg.cy, ex, ey);
+            }
+            px = ex; py = ey;
+          }
         }
         ctx.closePath();
         ctx.fillStyle = f.color;
@@ -801,7 +1087,7 @@ function penMouseUp(e) {
   pushUndo();
   const newLine = { type: 'L', x0: dragState.x0, y0: dragState.y0, x1, y1, strokeWidth: currentStrokeWidth, strokeColor: currentStrokeColor, strokeDashArray: currentStrokeDash };
 
-  // 1. Find all intersections of new line with existing segments (L-L only)
+  // 1. Find all intersections of new line with existing segments (L and C)
   const newLineIntersections = [];
   const segmentsToSplit = new Map();
 
@@ -813,6 +1099,21 @@ function penMouseUp(e) {
         newLineIntersections.push({ t: isec.t, x: isec.x, y: isec.y });
         if (!segmentsToSplit.has(i)) segmentsToSplit.set(i, []);
         segmentsToSplit.get(i).push({ u: isec.u, x: isec.x, y: isec.y });
+      }
+    } else if (seg.type === 'C') {
+      const list = lineCubicIntersection(newLine.x0, newLine.y0, newLine.x1, newLine.y1, seg);
+      for (const isec of list) {
+        newLineIntersections.push({ t: isec.t, x: isec.x, y: isec.y });
+        if (!segmentsToSplit.has(i)) segmentsToSplit.set(i, []);
+        segmentsToSplit.get(i).push({ u: isec.u, x: isec.x, y: isec.y });
+      }
+    } else if (seg.type === 'E') {
+      const list = lineEllipseIntersection(newLine.x0, newLine.y0, newLine.x1, newLine.y1, seg);
+      if (list.length >= 2) {
+        for (const isec of list) {
+          newLineIntersections.push({ t: isec.lineT, x: isec.x, y: isec.y });
+        }
+        segmentsToSplit.set(i, list);
       }
     }
   }
@@ -837,21 +1138,38 @@ function penMouseUp(e) {
   // 3. Split crossed segments and rebuild array
   const result = [];
   for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     const splits = segmentsToSplit.get(i);
-    if (splits) {
-      const seg = segments[i];
-      const props = withStrokeProps(seg);
+    if (splits && seg.type === 'E') {
+      splits.sort((a, b) => (a.ellipseParam ?? a.arcIdx + a.t) - (b.ellipseParam ?? b.arcIdx + b.t));
+      const pieces = splitEllipseAtCrossings(seg, splits);
+      result.push(...pieces);
+    } else if (splits) {
       splits.sort((a, b) => a.u - b.u);
       let u0 = 0;
+      let prev = seg;
       for (const s of splits) {
-        const x0 = seg.x0 + u0 * (seg.x1 - seg.x0);
-        const y0 = seg.y0 + u0 * (seg.y1 - seg.y0);
-        result.push({ type: 'L', x0, y0, x1: s.x, y1: s.y, ...props });
+        if (seg.type === 'L') {
+          const props = withStrokeProps(seg);
+          const x0 = seg.x0 + u0 * (seg.x1 - seg.x0);
+          const y0 = seg.y0 + u0 * (seg.y1 - seg.y0);
+          result.push({ type: 'L', x0, y0, x1: s.x, y1: s.y, ...props });
+        } else if (seg.type === 'C') {
+          const t = (s.u - u0) / (1 - u0);
+          const [left, right] = splitCubicAt(prev, t);
+          result.push(left);
+          prev = right;
+        }
         u0 = s.u;
       }
-      const x0 = seg.x0 + u0 * (seg.x1 - seg.x0);
-      const y0 = seg.y0 + u0 * (seg.y1 - seg.y0);
-      result.push({ type: 'L', x0, y0, x1: seg.x1, y1: seg.y1, ...props });
+      if (seg.type === 'L') {
+        const props = withStrokeProps(seg);
+        const x0 = seg.x0 + u0 * (seg.x1 - seg.x0);
+        const y0 = seg.y0 + u0 * (seg.y1 - seg.y0);
+        result.push({ type: 'L', x0, y0, x1: seg.x1, y1: seg.y1, ...props });
+      } else {
+        result.push(prev);
+      }
     } else {
       result.push(segments[i]);
     }
@@ -1098,8 +1416,7 @@ function rectMouseUp(e) {
   render();
 }
 
-// --- Oval tool: drag to draw, Shift = circle. Uses 4 cubic Bézier curves for smooth ellipse. ---
-const OVAL_K = 4 / 3 * (Math.SQRT2 - 1); // ~0.552, for cubic arc approximating 90° of circle
+// --- Oval tool: drag to draw, Shift = circle. Single E segment until crossed by another line. ---
 function ovalMouseDown(e) {
   const p = screenToCanvas(e);
   const snapped = snapToNearestPoint(p.x, p.y);
@@ -1110,8 +1427,17 @@ function ovalMouseDown(e) {
 function ovalMouseMove(e) {
   if (!dragState || dragState.type !== 'oval') return;
   const p = screenToCanvas(e);
-  dragState.x1 = p.x;
-  dragState.y1 = p.y;
+  let x1 = p.x, y1 = p.y;
+  if (e.shiftKey) {
+    const w = Math.abs(p.x - dragState.x0);
+    const h = Math.abs(p.y - dragState.y0);
+    const s = Math.max(w, h);
+    x1 = dragState.x0 + (p.x >= dragState.x0 ? s : -s);
+    y1 = dragState.y0 + (p.y >= dragState.y0 ? s : -s);
+  }
+  dragState.x1 = x1;
+  dragState.y1 = y1;
+  dragState.shiftKey = e.shiftKey;
   render();
 }
 
@@ -1119,7 +1445,7 @@ function ovalMouseUp(e) {
   if (!dragState || dragState.type !== 'oval') return;
   const { x0, y0, x1, y1 } = dragState;
   let rx = Math.abs(x1 - x0) / 2, ry = Math.abs(y1 - y0) / 2;
-  if (dragState.shiftKey) {
+  if (e.shiftKey) {
     const r = Math.max(rx, ry);
     rx = r;
     ry = r;
@@ -1132,17 +1458,10 @@ function ovalMouseUp(e) {
   }
   pushUndo();
   const props = { strokeWidth: currentStrokeWidth, strokeColor: currentStrokeColor, strokeDashArray: currentStrokeDash };
-  const k = OVAL_K;
-  const segs = [
-    { type: 'C', x0: cx + rx, y0: cy, c1x: cx + rx, c1y: cy + ry * k, c2x: cx + rx * k, c2y: cy + ry, x1: cx, y1: cy + ry, ...props },
-    { type: 'C', x0: cx, y0: cy + ry, c1x: cx - rx * k, c1y: cy + ry, c2x: cx - rx, c2y: cy + ry * k, x1: cx - rx, y1: cy, ...props },
-    { type: 'C', x0: cx - rx, y0: cy, c1x: cx - rx, c1y: cy - ry * k, c2x: cx - rx * k, c2y: cy - ry, x1: cx, y1: cy - ry, ...props },
-    { type: 'C', x0: cx, y0: cy - ry, c1x: cx + rx * k, c1y: cy - ry, c2x: cx + rx, c2y: cy - ry * k, x1: cx + rx, y1: cy, ...props }
-  ];
-  segments.push(...segs);
+  segments.push({ type: 'E', cx, cy, rx, ry, ...props });
   while (splitSegmentsAtAllIntersections()) { /* repeat until no more intersections */ }
   selectedIndices.clear();
-  for (let i = segments.length - 4; i < segments.length; i++) selectedIndices.add(i);
+  if (segments.length > 0) selectedIndices.add(segments.length - 1);
   dragState = null;
   render();
 }

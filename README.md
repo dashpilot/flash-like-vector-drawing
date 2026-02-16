@@ -31,10 +31,14 @@ Draw with the Pen (P), Rectangle (R), or Oval (O) tools—hold Shift for square 
 - **Command-Z** (Ctrl-Z) — undo | **Command-Shift-Z** — redo | **Command-D** (Ctrl-D) — duplicate
 - **Properties panel** — Right side: stroke width, stroke color (swatches), paint bucket fill color
 
+### Rectangle (R) and Oval (O)
+
+- **Shift during drag** — Rectangle becomes a square; Oval becomes a perfect circle
+
 ### Line as Knife
 
-- When a new line crosses an existing line, both are split at the intersection
-- All 4 resulting pieces become individually selectable segments
+- When a line crosses another line, rectangle, or oval, both are split at the intersection
+- All resulting pieces become individually selectable segments (works with curves in ovals too)
 
 ### Keyboard Shortcuts
 
